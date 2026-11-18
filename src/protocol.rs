@@ -625,7 +625,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
     };
     let r00 = readouts_floating[0][0].clone();
     let rf_excitation = get_rf(if is_ge { inp.fa } else { 90.0 }, 3.0, "excitation", 0.0);
-    let slice_select_excitation = get_gradient(0.0, rf_excitation.fwhm / (inp.slice_thickness * GYRO), MAX_SLEW, GradSpec::FlatDur(rf_excitation.dur), "slice select excitation");
+    let slice_select_excitation =
+        get_gradient(0.0, rf_excitation.fwhm / (inp.slice_thickness * GYRO), MAX_SLEW, GradSpec::FlatDur(rf_excitation.dur), "slice select excitation");
     let slice_select_rephaser_floating = grad(GradSpec::TotalArea(-slice_select_excitation.area / 2.0), "slice select rephaser");
     let read_prephaser_floating = {
         let mut g = get_gradient(0.0, MAX_AMP, MAX_SLEW, GradSpec::TotalArea(r00.area / 2.0), "read prephaser");
@@ -638,13 +639,17 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
         if is_ge { None } else { Some((0..turbo).map(|i| get_rf(180.0, 3.0, &format!("refocusing{}", suffix_rf(turbo, i)), 0.0)).collect()) };
     let slice_select_refocusing_floating: Option<Vec<Waveform>> = rf_refocusing_floating.as_ref().map(|rfs| {
         let amp = rfs[0].fwhm / (inp.slice_thickness * GYRO);
-        (0..turbo).map(|i| get_gradient(0.0, amp, MAX_SLEW, GradSpec::FlatDur(rfs[0].dur), &format!("slice select refocusing{}", suffix_rf(turbo, i)))).collect()
+        (0..turbo)
+            .map(|i| get_gradient(0.0, amp, MAX_SLEW, GradSpec::FlatDur(rfs[0].dur), &format!("slice select refocusing{}", suffix_rf(turbo, i))))
+            .collect()
     });
     let c_area = crusher_area(inp.slice_thickness);
-    let left_crusher_floating: Option<Vec<Waveform>> =
-        rf_refocusing_floating.as_ref().map(|_| (0..turbo).map(|i| grad(GradSpec::TotalArea(c_area), &format!("left crusher{}", suffix_rf(turbo, i)))).collect());
-    let right_crusher_floating: Option<Vec<Waveform>> =
-        rf_refocusing_floating.as_ref().map(|_| (0..turbo).map(|i| grad(GradSpec::TotalArea(c_area), &format!("right crusher{}", suffix_rf(turbo, i)))).collect());
+    let left_crusher_floating: Option<Vec<Waveform>> = rf_refocusing_floating
+        .as_ref()
+        .map(|_| (0..turbo).map(|i| grad(GradSpec::TotalArea(c_area), &format!("left crusher{}", suffix_rf(turbo, i)))).collect());
+    let right_crusher_floating: Option<Vec<Waveform>> = rf_refocusing_floating
+        .as_ref()
+        .map(|_| (0..turbo).map(|i| grad(GradSpec::TotalArea(c_area), &format!("right crusher{}", suffix_rf(turbo, i)))).collect());
     let is_ir = inp.sequence_type == "Inversion Recovery";
     let rf_inversion_floating = is_ir.then(|| get_rf(180.0, 3.0, "inversion", 0.0));
     let slice_select_inversion_floating = rf_inversion_floating.as_ref().map(|rf| {
@@ -685,8 +690,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
             right_crusher_floating.as_ref().unwrap()[0].dur.max(slice_select_refocusing_floating.as_ref().unwrap()[0].risetime),
         )
     };
-    let min_rf_to_readtrain_center =
-        rf_dur_for_read / 2.0 + gre_echo_train_dur / 2.0 - readout_risetime + (read_prephaser_dur + readout_risetime).max(phaser_duration).max(slice_rewind_dur);
+    let min_rf_to_readtrain_center = rf_dur_for_read / 2.0 + gre_echo_train_dur / 2.0 - readout_risetime
+        + (read_prephaser_dur + readout_risetime).max(phaser_duration).max(slice_rewind_dur);
 
     let min_te_from_indices = |gr: usize, rf: usize| -> f64 {
         let spacing = min_readtrain_spacing(gr_echo_spacing, gr, epi, is_ge, min_rf_to_readtrain_center, turbo, min_refocusing_time);
@@ -743,7 +748,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
 
     let readtrain_spacing = get_readtrain_spacing(te, epi, gr_echo_spacing, k0_gr, k0_rf);
     let readtrain_center_time: Vec<f64> = (0..turbo).map(|rf| readtrain_spacing * (rf + 1) as f64).collect();
-    let refocusing_time: Vec<f64> = if readtrain_center_time.len() == 1 { vec![te / 2.0] } else { readtrain_center_time.iter().map(|t| t - readtrain_spacing / 2.0).collect() };
+    let refocusing_time: Vec<f64> =
+        if readtrain_center_time.len() == 1 { vec![te / 2.0] } else { readtrain_center_time.iter().map(|t| t - readtrain_spacing / 2.0).collect() };
     let readout_center_time: Vec<Vec<f64>> =
         readtrain_center_time.iter().map(|c| (0..epi).map(|g| c + (g as f64 - (epi as f64 - 1.0) / 2.0) * gr_echo_spacing).collect()).collect();
 
@@ -824,7 +830,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
     } else {
         place(&read_prephaser_floating, (rf_excitation.dur + read_prephaser_floating.dur) / 2.0)
     };
-    let rf_refocusing: Option<Vec<Waveform>> = rf_refocusing_floating.as_ref().map(|v| v.iter().zip(refocusing_time.iter()).map(|(w, t)| place(w, *t)).collect());
+    let rf_refocusing: Option<Vec<Waveform>> =
+        rf_refocusing_floating.as_ref().map(|v| v.iter().zip(refocusing_time.iter()).map(|(w, t)| place(w, *t)).collect());
     let slice_select_refocusing: Option<Vec<Waveform>> =
         slice_select_refocusing_floating.as_ref().map(|v| v.iter().zip(refocusing_time.iter()).map(|(w, t)| place(w, *t)).collect());
     let crusher_offset = left_crusher_floating.as_ref().map(|l| (rf_refocusing_floating.as_ref().unwrap()[0].dur + l[0].dur) / 2.0);
@@ -832,23 +839,20 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
         left_crusher_floating.as_ref().map(|v| v.iter().zip(refocusing_time.iter()).map(|(w, t)| place(w, t - crusher_offset.unwrap())).collect());
     let right_crusher: Option<Vec<Waveform>> =
         right_crusher_floating.as_ref().map(|v| v.iter().zip(refocusing_time.iter()).map(|(w, t)| place(w, t + crusher_offset.unwrap())).collect());
-    let phasers: Vec<Waveform> = phasers_floating
+    let phasers: Vec<Waveform> =
+        phasers_floating.iter().zip(readtrain_center_time.iter()).map(|(p, c)| place(p, c - (gre_echo_train_dur + p.dur) / 2.0 + readout_risetime)).collect();
+    let sampling_windows: Vec<Vec<Waveform>> = sampling_windows_floating
         .iter()
-        .zip(readtrain_center_time.iter())
-        .map(|(p, c)| place(p, c - (gre_echo_train_dur + p.dur) / 2.0 + readout_risetime))
+        .zip(readout_center_time.iter())
+        .map(|(ss, ts)| ss.iter().zip(ts.iter()).map(|(s, t)| place(s, *t)).collect())
         .collect();
-    let sampling_windows: Vec<Vec<Waveform>> =
-        sampling_windows_floating.iter().zip(readout_center_time.iter()).map(|(ss, ts)| ss.iter().zip(ts.iter()).map(|(s, t)| place(s, *t)).collect()).collect();
     let blips: Vec<Vec<Waveform>> = readtrain_center_time
         .iter()
         .zip(blips_floating.iter())
         .map(|(c, bs)| bs.iter().enumerate().map(|(g, b)| place(b, c + gr_echo_spacing * (g as f64 - epi as f64 / 2.0 + 1.0))).collect())
         .collect();
-    let rephasers: Vec<Waveform> = rephasers_floating
-        .iter()
-        .zip(readtrain_center_time.iter())
-        .map(|(r, c)| place(r, c + (gre_echo_train_dur + r.dur) / 2.0 - readout_risetime))
-        .collect();
+    let rephasers: Vec<Waveform> =
+        rephasers_floating.iter().zip(readtrain_center_time.iter()).map(|(r, c)| place(r, c + (gre_echo_train_dur + r.dur) / 2.0 - readout_risetime)).collect();
     let last_readout = readouts.last().unwrap().last().unwrap().clone();
     let spoiler = place(&spoiler_floating, last_readout.center + (last_readout.flat_dur + spoiler_floating.dur) / 2.0);
 
@@ -986,7 +990,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
             for _ in 0..2 {
                 if m > 1.0 {
                     let q = t - phaser_duration.max(slice_select_excitation.risetime + slice_select_rephaser_floating.dur);
-                    areas.push(d * s * (q - n * (d + v) + v / 2.0) / (m - 1.0)); // eq. 15
+                    areas.push(d * s * (q - n * (d + v) + v / 2.0) / (m - 1.0));
+                    // eq. 15
                 }
                 // max wrt G read (eq. 12)
                 let h_roots = quadratic_roots(
@@ -1082,7 +1087,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
     let reference_tissue = if tissues.contains(&inp.reference_tissue) { inp.reference_tissue.clone() } else { tissues.first().cloned().unwrap_or_default() };
     let dwell_time = if sampling_time.len() > 1 { sampling_time[1] - sampling_time[0] } else { f64::NAN };
     let noise_std = inp.noise_gain / (dwell_time * inp.nsa).sqrt() / inp.field_strength;
-    let signal_level = ((k_read_axis.len() * num_sampled * num_blades) as f64).sqrt() * inp.slice_thickness * (fov[0] * fov[1]) / (matrix[0] * matrix[1]) as f64;
+    let signal_level =
+        ((k_read_axis.len() * num_sampled * num_blades) as f64).sqrt() * inp.slice_thickness * (fov[0] * fov[1]) / (matrix[0] * matrix[1]) as f64;
     let decayed_signal = {
         let argmin = |v: &[f64]| v.iter().enumerate().fold((0usize, f64::INFINITY), |(bi, bv), (i, x)| if x.abs() < bv { (i, x.abs()) } else { (bi, bv) }).0;
         let i_read = argmin(&k_read_axis);

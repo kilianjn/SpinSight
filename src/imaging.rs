@@ -315,7 +315,8 @@ impl Simulator {
         let fi = field_index(inp.field_strength);
         let n_read = p.k_read_axis.len();
         let fat_ratio = |r: &FatResonance| if inp.fatsat { r.ratio_with_fatsat } else { r.ratio };
-        let pd_t1w_fat: Vec<f64> = FAT_RESONANCES.iter().map(|r| component_pd_t1w(r.name, &inp.sequence_type, p.tr, inp.ti, inp.fa, inp.field_strength)).collect();
+        let pd_t1w_fat: Vec<f64> =
+            FAT_RESONANCES.iter().map(|r| component_pd_t1w(r.name, &inp.sequence_type, p.tr, inp.ti, inp.fa, inp.field_strength)).collect();
         struct TissueW {
             t2: f64,
             water: f64,
@@ -469,17 +470,6 @@ impl Simulator {
             ax
         });
         timings.push(("total", t0.elapsed().as_secs_f64()));
-        SimOutput {
-            image_array,
-            fov: p.fov,
-            gridded,
-            grid_axes,
-            zerofilled,
-            processed_axes,
-            measured,
-            measured_shape: [n0, n1, na],
-            tae: tae_grid,
-            timings,
-        }
+        SimOutput { image_array, fov: p.fov, gridded, grid_axes, zerofilled, processed_axes, measured, measured_shape: [n0, n1, na], tae: tae_grid, timings }
     }
 }

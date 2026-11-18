@@ -272,19 +272,16 @@ fn spec(
     ParamSpec { name, label, widget, options, bounds: None, step: 0.0, default, precedence, group, integer }
 }
 
-fn number(name: &'static str, label: &'static str, bounds: Option<(f64, f64)>, step: f64, default: f64, precedence: i32, group: Option<&'static str>) -> ParamSpec {
-    ParamSpec {
-        name,
-        label,
-        widget: Widget::FloatSlider,
-        options: None,
-        bounds,
-        step,
-        default: Value::Num(default),
-        precedence,
-        group,
-        integer: false,
-    }
+fn number(
+    name: &'static str,
+    label: &'static str,
+    bounds: Option<(f64, f64)>,
+    step: f64,
+    default: f64,
+    precedence: i32,
+    group: Option<&'static str>,
+) -> ParamSpec {
+    ParamSpec { name, label, widget: Widget::FloatSlider, options: None, bounds, step, default: Value::Num(default), precedence, group, integer: false }
 }
 
 fn boolean(name: &'static str, label: &'static str, default: bool, precedence: i32, group: Option<&'static str>) -> ParamSpec {
@@ -347,9 +344,36 @@ fn build(phantom_names: &[String], preset_names: &[String]) -> Vec<ParamSpec> {
             SEQUENCE,
             false,
         ),
-        spec("pixel_bandwidth", "Bandwidth", DiscreteSlider, Some(dict_options(pbw_vals().iter().copied(), formatting::pixel_bandwidth)), Value::Num(480.0), 2, SEQUENCE, false),
-        spec("FOV_bandwidth", "FOV bandwidth", DiscreteSlider, Some(dict_options(fov_bw_vals().iter().copied(), formatting::fov_bandwidth)), Value::Num(43.2), -2, SEQUENCE, false),
-        spec("FW_shift", "Fat/water shift", DiscreteSlider, Some(dict_options(fw_shift_vals().iter().copied(), formatting::fw_shift)), Value::Num(0.45), -2, SEQUENCE, false),
+        spec(
+            "pixel_bandwidth",
+            "Bandwidth",
+            DiscreteSlider,
+            Some(dict_options(pbw_vals().iter().copied(), formatting::pixel_bandwidth)),
+            Value::Num(480.0),
+            2,
+            SEQUENCE,
+            false,
+        ),
+        spec(
+            "FOV_bandwidth",
+            "FOV bandwidth",
+            DiscreteSlider,
+            Some(dict_options(fov_bw_vals().iter().copied(), formatting::fov_bandwidth)),
+            Value::Num(43.2),
+            -2,
+            SEQUENCE,
+            false,
+        ),
+        spec(
+            "FW_shift",
+            "Fat/water shift",
+            DiscreteSlider,
+            Some(dict_options(fw_shift_vals().iter().copied(), formatting::fw_shift)),
+            Value::Num(0.45),
+            -2,
+            SEQUENCE,
+            false,
+        ),
         spec("NSA", "NSA", DiscreteSlider, Some(list_options((1..=16).map(f64::from))), Value::Num(1.0), 3, SEQUENCE, true),
         spec(
             "partial_Fourier_factor",
@@ -369,16 +393,7 @@ fn build(phantom_names: &[String], preset_names: &[String]) -> Vec<ParamSpec> {
         spec("TE", "TE", DiscreteSlider, Some(dict_options(te_vals().iter().copied(), formatting::ts)), Value::Num(12.0), 3, CONTRAST, false),
         spec("TI", "TI", DiscreteSlider, Some(dict_options(ti_vals().iter().copied(), formatting::ts)), Value::Num(40.0), -4, CONTRAST, false),
         spec("FA", "Flip angle", DiscreteSlider, Some(dict_options((1..=90).map(f64::from), formatting::flip_angle)), Value::Num(90.0), -5, CONTRAST, true),
-        spec(
-            "trajectory",
-            "k-space trajectory",
-            Select,
-            Some(str_options(&["Cartesian", "Radial"])),
-            Value::s("Cartesian"),
-            1,
-            GEOMETRY,
-            false,
-        ),
+        spec("trajectory", "k-space trajectory", Select, Some(str_options(&["Cartesian", "Radial"])), Value::s("Cartesian"), 1, GEOMETRY, false),
         spec(
             "frequency_direction",
             "Frequency encoding direction",

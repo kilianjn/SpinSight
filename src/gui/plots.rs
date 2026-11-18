@@ -125,10 +125,12 @@ pub fn image_plot(ui: &mut Ui, tex: Option<&TextureHandle>, fov: [f64; 2], fov_b
                 plot_ui.line(Line::new("acquired FOV", PlotPoints::from(rect_line(a[1], a[0]))).color(LIGHTBLUE).width(3.0));
             }
             if let Some(d) = b.acquired_circle {
-                let pts: Vec<[f64; 2]> = (0..=180).map(|i| {
-                    let a = i as f64 / 180.0 * std::f64::consts::TAU;
-                    [d / 2.0 * a.cos(), d / 2.0 * a.sin()]
-                }).collect();
+                let pts: Vec<[f64; 2]> = (0..=180)
+                    .map(|i| {
+                        let a = i as f64 / 180.0 * std::f64::consts::TAU;
+                        [d / 2.0 * a.cos(), d / 2.0 * a.sin()]
+                    })
+                    .collect();
                 plot_ui.line(Line::new("acquired FOV", PlotPoints::from(pts)).color(LIGHTBLUE).width(3.0));
             }
             plot_ui.line(Line::new("reconstructed FOV", PlotPoints::from(rect_line(b.reconstructed[1], b.reconstructed[0]))).color(annotation).width(3.0));
@@ -373,7 +375,8 @@ pub fn sequence_plot(ui: &mut Ui, p: &Protocol, signal_curves: &[Waveform], span
             if let Some(pt) = pointer {
                 if plot_ui.response().hovered() {
                     for (i, w) in objects.iter().enumerate() {
-                        let inside = if board == Board::Signal { pt.x >= w.t_start() && pt.x <= w.t_end() } else { point_in_polygon(pt.x, pt.y, &waveform_points(w)) };
+                        let inside =
+                            if board == Board::Signal { pt.x >= w.t_start() && pt.x <= w.t_end() } else { point_in_polygon(pt.x, pt.y, &waveform_points(w)) };
                         if inside {
                             hit = Some(i);
                             break;
@@ -385,7 +388,11 @@ pub fn sequence_plot(ui: &mut Ui, p: &Protocol, signal_curves: &[Waveform], span
                 for (i, w) in objects.iter().enumerate() {
                     let h = hit == Some(i);
                     let rect = vec![[w.t_start(), -2.0], [w.t_end(), -2.0], [w.t_end(), 2.0], [w.t_start(), 2.0]];
-                    plot_ui.polygon(Polygon::new("ADC", PlotPoints::from(rect)).fill_color(alpha(PERU, if h { 0.8 } else { 0.1 })).stroke(Stroke::new(1.0, alpha(PERU, 0.3))));
+                    plot_ui.polygon(
+                        Polygon::new("ADC", PlotPoints::from(rect))
+                            .fill_color(alpha(PERU, if h { 0.8 } else { 0.1 }))
+                            .stroke(Stroke::new(1.0, alpha(PERU, 0.3))),
+                    );
                 }
             } else if let Some(i) = hit {
                 plot_ui.add(zero_area("hovered", &waveform_points(&objects[i]), alpha(board.color(), 0.8), Some(Stroke::new(1.5, GRAY))));

@@ -468,7 +468,8 @@ fn read_cache(ph: &Phantom) -> Option<PhantomKspace> {
     let mut kspace = Vec::with_capacity(nt);
     for _ in 0..nt {
         let raw = take(rows * cols * 16)?;
-        let data = raw.chunks_exact(16).map(|c| C64::new(f64::from_le_bytes(c[..8].try_into().unwrap()), f64::from_le_bytes(c[8..].try_into().unwrap()))).collect();
+        let data =
+            raw.chunks_exact(16).map(|c| C64::new(f64::from_le_bytes(c[..8].try_into().unwrap()), f64::from_le_bytes(c[8..].try_into().unwrap()))).collect();
         kspace.push(Array2::from_vec(rows, cols, data));
     }
     Some(PhantomKspace { kspace })
@@ -514,10 +515,12 @@ pub fn compute_kspace(ph: &Phantom, progress: Option<&Arc<Progress>>) -> Phantom
     let mut order: Vec<usize> = (0..jobs.len()).collect();
     let size = |s: &Shape| {
         let (sup, _) = support_and_center(std::iter::once(s));
-        sup[0] * sup[1] * match s {
-            Shape::Polygon { vertices } => vertices.len() as f64,
-            Shape::Ellipse { .. } => 4.0,
-        }
+        sup[0]
+            * sup[1]
+            * match s {
+                Shape::Polygon { vertices } => vertices.len() as f64,
+                Shape::Ellipse { .. } => 4.0,
+            }
     };
     order.sort_by(|&a, &b| size(jobs[b].1).partial_cmp(&size(jobs[a].1)).unwrap_or(std::cmp::Ordering::Equal));
     let nt = ph.tissues.len();

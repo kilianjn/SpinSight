@@ -81,17 +81,7 @@ pub fn get_gradient(time: f64, max_amp: f64, max_slew: f64, spec: GradSpec, name
         *x += time - dur / 2.0;
     }
     let area = gradient_area(&amp, &t);
-    Waveform {
-        name: name.to_string(),
-        amp,
-        time: t,
-        center: time,
-        dur,
-        flat_dur,
-        risetime,
-        area,
-        ..Default::default()
-    }
+    Waveform { name: name.to_string(), amp, time: t, center: time, dur, flat_dur, risetime, area, ..Default::default() }
 }
 
 pub fn gradient_area(g: &[f64], t: &[f64]) -> f64 {
@@ -166,27 +156,12 @@ pub fn get_rf(flip_angle: f64, dur: f64, name: &str, time: f64) -> Waveform {
     let scale = flip_angle / (mean * dur / 1e3 * GYRO * 360.0);
     let (am, t) = prepare_waveform(waveform, t0, t1, scale);
     let fwhm = get_fwhm(&am[1..am.len() - 1], &t[1..t.len() - 1]);
-    Waveform {
-        name: name.to_string(),
-        amp: am,
-        time: t,
-        center: time,
-        dur,
-        flip_angle,
-        fwhm,
-        ..Default::default()
-    }
+    Waveform { name: name.to_string(), amp: am, time: t, center: time, dur, flip_angle, fwhm, ..Default::default() }
 }
 
 /// ADC (sampling) window
 pub fn get_adc(dur: f64, name: &str, time: f64) -> Waveform {
-    Waveform {
-        name: name.to_string(),
-        time: vec![-dur / 2.0 + time, dur / 2.0 + time],
-        center: time,
-        dur,
-        ..Default::default()
-    }
+    Waveform { name: name.to_string(), time: vec![-dur / 2.0 + time, dur / 2.0 + time], center: time, dur, ..Default::default() }
 }
 
 /// Signal curve for the signal board
@@ -196,14 +171,7 @@ pub fn get_signal(signal: &[f64], time: &[f64], scale: f64, exponent: f64, name:
     for a in am.iter_mut() {
         *a = sign(*a) * a.abs().powf(exponent);
     }
-    Waveform {
-        name: name.to_string(),
-        amp: am,
-        time: t,
-        center: (t0 + t1) / 2.0,
-        dur: (t1 - t0).abs(),
-        ..Default::default()
-    }
+    Waveform { name: name.to_string(), amp: am, time: t, center: (t0 + t1) / 2.0, dur: (t1 - t0).abs(), ..Default::default() }
 }
 
 /// Spectral FWHM [Hz] of the pulse `s` sampled at times `t` [ms] (`get_FWHM`).

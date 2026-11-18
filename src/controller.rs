@@ -542,11 +542,8 @@ impl Controller {
         self.set_param("FW_shift", Value::Num(convert::pixel_bw_to_shift(pbw, self.inputs.field_strength)));
         for dir in ["F", "P"] {
             let fov = if dir == "F" { self.inputs.fov_f } else { self.inputs.fov_p };
-            let (m, rm) = if dir == "F" {
-                (self.protocol.matrix_f, self.protocol.recon_matrix_f)
-            } else {
-                (self.protocol.matrix_p, self.protocol.recon_matrix_p)
-            };
+            let (m, rm) =
+                if dir == "F" { (self.protocol.matrix_f, self.protocol.recon_matrix_f) } else { (self.protocol.matrix_p, self.protocol.recon_matrix_p) };
             self.set_param(&format!("voxel_{dir}"), Value::Num(fov / m as f64));
             self.set_param(&format!("recon_voxel_{dir}"), Value::Num(fov / rm as f64));
         }
@@ -564,7 +561,8 @@ impl Controller {
     }
 
     fn update_visibility(&mut self) {
-        let (pbw, fovbw, fws, vox, mat) = (self.pixel_bw_is_input(), self.fov_bw_is_input(), self.fw_shift_is_input(), self.voxel_size_is_input(), self.matrix_is_input());
+        let (pbw, fovbw, fws, vox, mat) =
+            (self.pixel_bw_is_input(), self.fov_bw_is_input(), self.fw_shift_is_input(), self.voxel_size_is_input(), self.matrix_is_input());
         let zf = self.bool("do_zerofill");
         self.set_visibility("pixel_bandwidth", pbw);
         self.set_visibility("FOV_bandwidth", fovbw);

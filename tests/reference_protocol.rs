@@ -208,7 +208,12 @@ fn protocols_match_python() {
         if eo != p.echo_order_options {
             c.failures.push(format!("{config}: echo_order_options {:?} vs {eo:?}", p.echo_order_options));
         }
-        let pe_flat: Vec<f64> = r["pe_table"].as_array().unwrap().iter().flat_map(|a| a.as_array().unwrap().iter().flat_map(|b| b.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))).collect();
+        let pe_flat: Vec<f64> = r["pe_table"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|a| a.as_array().unwrap().iter().flat_map(|b| b.as_array().unwrap().iter().map(|v| v.as_f64().unwrap())))
+            .collect();
         c.vec("pe_table", &p.pe_table.iter().map(|&v| v as f64).collect::<Vec<_>>(), &J::from(pe_flat));
         c.num("shot", p.shot as f64, &r["shot"]);
         c.vec("k_read_axis", &p.k_read_axis, &r["k_read_axis"]);

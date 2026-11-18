@@ -249,7 +249,11 @@ impl SpinSightApp {
                         self.dark_mode = Some(d);
                         ui.ctx().set_theme(if d { egui::Theme::Dark } else { egui::Theme::Light });
                     }
-                    if ui.selectable_label(self.show_help, RichText::new("? Help").size(14.0)).on_hover_text("Help mode: explanations of each parameter").clicked() {
+                    if ui
+                        .selectable_label(self.show_help, RichText::new("? Help").size(14.0))
+                        .on_hover_text("Help mode: explanations of each parameter")
+                        .clicked()
+                    {
                         self.show_help = !self.show_help;
                     }
                     if self.worker.status.busy.load(Ordering::Relaxed) {
@@ -448,7 +452,11 @@ impl SpinSightApp {
     fn footer(&mut self, ui: &mut Ui) {
         let gray = Color32::GRAY;
         let timing = self.result.as_ref().and_then(|r| r.output.timings.iter().find(|t| t.0 == "total").map(|t| t.1));
-        ui.label(RichText::new("SpinSight – original Python version written by Johan Berglund, Ph.D. (johan.berglund@akademiska.se); Rust port.").italics().color(gray));
+        ui.label(
+            RichText::new("SpinSight – original Python version written by Johan Berglund, Ph.D. (johan.berglund@akademiska.se); Rust port.")
+                .italics()
+                .color(gray),
+        );
         let mut line = format!("(started {}, v {})", self.start_time, env!("CARGO_PKG_VERSION"));
         if let Some(t) = timing {
             line.push_str(&format!(" · last simulation {:.0} ms", t * 1e3));
@@ -558,7 +566,8 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
                     }
                     if with_text {
                         let is_pct = st.options.first().is_some_and(|o| o.label.ends_with('%'));
-                        let shown = if is_pct { crate::formatting::percentage(st.value.num()) } else { crate::params::Value::Num(st.value.num()).num().to_string() };
+                        let shown =
+                            if is_pct { crate::formatting::percentage(st.value.num()) } else { crate::params::Value::Num(st.value.num()).num().to_string() };
                         let buf = text_buf.entry(name).or_insert_with(|| shown.clone());
                         let r = ui.add(egui::TextEdit::singleline(buf).desired_width(text_w - 8.0).align(egui::Align2::CENTER_CENTER));
                         if r.lost_focus() {

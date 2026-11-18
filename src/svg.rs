@@ -196,7 +196,8 @@ fn parse_transform(s: &str) -> [f64; 6] {
     while let Some(open) = rest.find('(') {
         let name = rest[..open].trim().trim_start_matches(',').trim();
         let Some(close) = rest.find(')') else { break };
-        let args: Vec<f64> = rest[open + 1..close].split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).filter_map(|t| t.parse().ok()).collect();
+        let args: Vec<f64> =
+            rest[open + 1..close].split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).filter_map(|t| t.parse().ok()).collect();
         let t = match (name, args.as_slice()) {
             ("matrix", [a, b, c, d, e, f]) => [*a, *b, *c, *d, *e, *f],
             ("translate", [x]) => [1.0, 0.0, 0.0, 1.0, *x, 0.0],

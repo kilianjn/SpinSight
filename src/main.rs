@@ -49,7 +49,18 @@ struct Cli {
 }
 
 fn parse_args() -> Result<Cli, String> {
-    let mut cli = Cli { dark_mode: None, settings: None, sliders_with_text: false, export: None, export_kspace: None, sets: vec![], benchmark: false, show_sequence: false, show_kspace: false, help_mode: false };
+    let mut cli = Cli {
+        dark_mode: None,
+        settings: None,
+        sliders_with_text: false,
+        export: None,
+        export_kspace: None,
+        sets: vec![],
+        benchmark: false,
+        show_sequence: false,
+        show_kspace: false,
+        help_mode: false,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -89,7 +100,9 @@ fn parse_args() -> Result<Cli, String> {
             "--show-kspace" => cli.show_kspace = true,
             "--help-mode" => cli.help_mode = true,
             // options of the Python web server version
-            "-b" | "--noBrowser" | "-n" | "--network" | "-l" | "--liveSliders" => eprintln!("note: option {a} only applies to the Python web version and is ignored"),
+            "-b" | "--noBrowser" | "-n" | "--network" | "-l" | "--liveSliders" => {
+                eprintln!("note: option {a} only applies to the Python web version and is ignored")
+            }
             "-p" | "--port" | "-u" | "--url" | "-i" | "--instances" => {
                 let _ = value(&a);
                 eprintln!("note: option {a} only applies to the Python web version and is ignored");
@@ -158,7 +171,10 @@ fn headless(cli: &Cli) -> Result<(), String> {
         save_png(p, &k, true)?;
         println!("wrote {}", p.display());
     }
-    println!("phantom k-space: {t_phantom:.3} s; simulation: {}", out.timings.iter().map(|(k, v)| format!("{k} {:.1} ms", v * 1e3)).collect::<Vec<_>>().join(", "));
+    println!(
+        "phantom k-space: {t_phantom:.3} s; simulation: {}",
+        out.timings.iter().map(|(k, v)| format!("{k} {:.1} ms", v * 1e3)).collect::<Vec<_>>().join(", ")
+    );
     println!("relative SNR {}, scan time {}", ctrl.info.relative_snr, ctrl.info.scantime);
     Ok(())
 }
@@ -169,7 +185,13 @@ fn benchmark() -> Result<(), String> {
         let ph = phantom::load(name, 0.5)?;
         let t = Instant::now();
         let _ = phantom::compute_kspace(&ph, None);
-        println!("phantom k-space {name:12} {:>7.0} ms  (matrix {}x{}, {} shapes)", t.elapsed().as_secs_f64() * 1e3, ph.matrix[0], ph.matrix[1], ph.shapes.iter().map(|s| s.len()).sum::<usize>());
+        println!(
+            "phantom k-space {name:12} {:>7.0} ms  (matrix {}x{}, {} shapes)",
+            t.elapsed().as_secs_f64() * 1e3,
+            ph.matrix[0],
+            ph.matrix[1],
+            ph.shapes.iter().map(|s| s.len()).sum::<usize>()
+        );
     }
     let ph = phantom::load("brain", 0.5)?;
     let pk = phantom::load_kspace(&ph, None);
@@ -197,7 +219,12 @@ fn benchmark() -> Result<(), String> {
         let t = Instant::now();
         let _ = sim.run(&p, &inp, &ctrl.phantom, &pk);
         let warm = t.elapsed().as_secs_f64();
-        println!("{label:20} protocol {:>6.2} ms | image (new geometry) {:>6.0} ms | image (contrast change) {:>5.0} ms", t_protocol * 1e3, cold * 1e3, warm * 1e3);
+        println!(
+            "{label:20} protocol {:>6.2} ms | image (new geometry) {:>6.0} ms | image (contrast change) {:>5.0} ms",
+            t_protocol * 1e3,
+            cold * 1e3,
+            warm * 1e3
+        );
     }
     Ok(())
 }
