@@ -28,3 +28,10 @@ nohup.out
 pidFile
 
 settings.toml
+# Rust
+/target
+# (re-include files ignored by the rules above)
+!.github
+!.github/**
+!assets/icon/*.png
+!docs/*.png
