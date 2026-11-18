@@ -245,7 +245,22 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// The release executable uses the Windows GUI subsystem (no console window); when started from a
+/// terminal with arguments, attach to that terminal so that `--help`, `--export` etc. can print.
+#[cfg(windows)]
+fn attach_console() {
+    if std::env::args().len() > 1 {
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console() {}
+
 fn main() {
+    attach_console();
     let cli = match parse_args() {
         Ok(c) => c,
         Err(e) => {

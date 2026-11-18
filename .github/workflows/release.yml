@@ -1,0 +1,191 @@
+name: Build & release
+
+# Builds standalone SpinSight executables for Windows, macOS and Linux and publishes them as a
+# GitHub Release.
+#  * push of a tag "v*"   → release for that tag
+#  * push to main         → (re)publishes the release "v<version from Cargo.toml>"
+#  * pull requests / other pushes / manual runs → test + build (downloadable workflow artifacts)
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets
+      - name: Unit tests and cross-validation against the Python reference values
+        run: cargo test --locked --release
+
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: macos
+            os: macos-latest
+          - name: linux
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Build (Windows)
+        if: matrix.name == 'windows'
+        shell: bash
+        run: |
+          cargo build --release --locked
+          mkdir -p dist
+          cp target/release/spinsight.exe dist/SpinSight-windows-x64.exe
+
+      - name: Build (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          cargo build --release --locked
+          mkdir -p dist/SpinSight-linux-x86_64
+          cp target/release/spinsight dist/SpinSight-linux-x86_64/spinsight
+          cp assets/icon/icon_256.png dist/SpinSight-linux-x86_64/spinsight.png
+          cat > dist/SpinSight-linux-x86_64/spinsight.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=SpinSight
+          Comment=MRI simulator for teaching
+          Exec=spinsight
+          Icon=spinsight
+          Categories=Science;Education;MedicalSoftware;
+          EOF
+          tar -C dist -czf dist/SpinSight-linux-x86_64.tar.gz SpinSight-linux-x86_64
+          rm -rf dist/SpinSight-linux-x86_64
+
+      - name: Build (macOS universal .app)
+        if: matrix.name == 'macos'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          APP=dist/SpinSight.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/SpinSight" \
+            target/aarch64-apple-darwin/release/spinsight target/x86_64-apple-darwin/release/spinsight
+          ICONSET=dist/AppIcon.iconset
+          mkdir -p $ICONSET
+          for s in 16 32 128 256 512; do
+            cp assets/icon/icon_$s.png $ICONSET/icon_${s}x${s}.png
+            cp assets/icon/icon_$((s*2)).png $ICONSET/icon_${s}x${s}@2x.png
+          done
+          iconutil -c icns $ICONSET -o "$APP/Contents/Resources/AppIcon.icns"
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>SpinSight</string>
+            <key>CFBundleDisplayName</key><string>SpinSight</string>
+            <key>CFBundleIdentifier</key><string>se.uu.spinsight</string>
+            <key>CFBundleExecutable</key><string>SpinSight</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          # ad-hoc signature so Apple Silicon Macs accept the universal binary
+          codesign --force --deep --sign - "$APP"
+          (cd dist && ditto -c -k --keepParent SpinSight.app SpinSight-macos-universal.zip)
+          rm -rf "$APP" $ICONSET
+
+      - name: Smoke test (headless simulation)
+        shell: bash
+        run: |
+          case "${{ matrix.name }}" in
+            windows) BIN=target/release/spinsight.exe ;;
+            macos)   BIN=target/aarch64-apple-darwin/release/spinsight ;;
+            *)       BIN=target/release/spinsight ;;
+          esac
+          "$BIN" --version
+          "$BIN" --export smoke.png --set trajectory=Radial
+          test -s smoke.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spinsight-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [test, build]
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          ls -la dist
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAG="${GITHUB_REF#refs/tags/}"; else TAG="v$VERSION"; fi
+          cat > notes.md <<EOF
+          ## SpinSight $VERSION – standalone downloads
+
+          SpinSight is an educational MRI simulator that jointly visualizes the imaging parameters, the pulse
+          sequence, the k-space data and the MR image. This is the native Rust version: a single executable,
+          no Python and no web browser needed.
+
+          | Computer | File | How to start |
+          |---|---|---|
+          | Windows 10/11 (64-bit) | **SpinSight-windows-x64.exe** | Double-click. If SmartScreen warns about an unknown app: *More info → Run anyway*. |
+          | macOS 11+ (Apple Silicon & Intel) | **SpinSight-macos-universal.zip** | Unzip, move *SpinSight.app* to Applications. First start: right-click → *Open* (the app is not notarised). |
+          | Linux x86-64 | **SpinSight-linux-x86_64.tar.gz** | \`tar xzf SpinSight-linux-x86_64.tar.gz && ./SpinSight-linux-x86_64/spinsight\` |
+
+          Run \`spinsight --help\` for command line options (theme, settings file, headless image export).
+
+          Built from commit $GITHUB_SHA.
+          EOF
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            # branch build: replace the release (and move its tag) to this commit
+            gh release delete "$TAG" --yes --cleanup-tag || true
+            git push --delete origin "$TAG" 2>/dev/null || true
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "SpinSight $VERSION" --notes-file notes.md --latest
+          fi
