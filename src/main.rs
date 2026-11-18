@@ -25,6 +25,8 @@ OPTIONS:
         --show-kspace             show k-space at startup
         --help-mode               start in help mode
         --set <name=value>        set a parameter at startup (repeatable)
+        --phantom-maker [IMAGE]   open the phantom maker at startup (optionally with an image)
+        --import <FILE>           import a phantom file (.svg with .toml colormap, .toml, label .png) and exit
         --export <FILE.png>       render the MR image to a PNG file and exit (no GUI)
         --export-kspace <FILE>    also write the k-space display to a PNG file
         --benchmark               print computation times and exit
@@ -46,6 +48,8 @@ struct Cli {
     show_sequence: bool,
     show_kspace: bool,
     help_mode: bool,
+    phantom_maker: Option<Option<PathBuf>>,
+    import: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Cli, String> {
@@ -60,8 +64,10 @@ fn parse_args() -> Result<Cli, String> {
         show_sequence: false,
         show_kspace: false,
         help_mode: false,
+        phantom_maker: None,
+        import: None,
     };
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -99,6 +105,14 @@ fn parse_args() -> Result<Cli, String> {
             "--show-sequence" => cli.show_sequence = true,
             "--show-kspace" => cli.show_kspace = true,
             "--help-mode" => cli.help_mode = true,
+            "--phantom-maker" => {
+                let img = match args.peek() {
+                    Some(a) if !a.starts_with('-') => args.next().map(PathBuf::from),
+                    _ => None,
+                };
+                cli.phantom_maker = Some(img);
+            }
+            "--import" => cli.import = Some(PathBuf::from(value("--import")?)),
             // options of the Python web server version
             "-b" | "--noBrowser" | "-n" | "--network" | "-l" | "--liveSliders" => {
                 eprintln!("note: option {a} only applies to the Python web version and is ignored")
@@ -268,11 +282,33 @@ fn main() {
             std::process::exit(2);
         }
     };
+    phantom::purge_outdated_cache();
     params::init(&phantom::phantom_names(), &presets::builtin_preset_names().iter().map(|s| s.to_string()).collect::<Vec<_>>());
     if cli.benchmark {
         if let Err(e) = benchmark() {
             eprintln!("error: {e}");
             std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(path) = &cli.import {
+        match spinsight::phantom_maker::import_file(path) {
+            Ok(spinsight::phantom_maker::Import::Done(name)) => println!("imported phantom \"{name}\""),
+            Ok(spinsight::phantom_maker::Import::NeedsColormap { colors, .. }) => {
+                eprintln!(
+                    "the SVG needs a colormap (.toml next to it) for the colours {:?}; or import it in the app",
+                    colors.iter().map(|c| &c.0).collect::<Vec<_>>()
+                );
+                std::process::exit(1);
+            }
+            Ok(spinsight::phantom_maker::Import::Image(_)) => {
+                eprintln!("this image has no colormap: segment it with the phantom maker (spinsight --phantom-maker IMAGE)");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -308,6 +344,7 @@ fn main() {
         show_kspace: cli.show_kspace,
         help_mode: cli.help_mode,
         sets,
+        phantom_maker: cli.phantom_maker.clone(),
     };
     let result = eframe::run_native(
         "SpinSight",

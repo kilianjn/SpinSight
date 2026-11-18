@@ -101,6 +101,8 @@ pub fn fov_box(p: &Protocol) -> FovBox {
 pub fn image_plot(ui: &mut Ui, tex: Option<&TextureHandle>, fov: [f64; 2], fov_box: Option<&FovBox>, size: f32, reset: bool) {
     let annotation = annotation_color(ui);
     let mut plot = Plot::new("image_plot")
+        .show_x(false)
+        .show_y(false)
         .width(size)
         .height(size)
         .data_aspect(1.0)
@@ -151,6 +153,8 @@ pub fn kspace_plot(ui: &mut Ui, tex: Option<&TextureHandle>, axes: &[Vec<f64>; 2
     let (y0, y1) = extent(&axes[0]);
     let lim = 1.12 * axes[1].iter().cloned().fold(0.0f64, f64::max);
     let mut plot = Plot::new("kspace_plot")
+        .show_x(false)
+        .show_y(false)
         .width(size)
         .height(size)
         .data_aspect(1.0)

@@ -116,6 +116,7 @@ impl Controller {
             generation: 0,
             messages: Vec::new(),
         };
+        c.refresh_phantoms();
         c.sync_with_graph();
         Ok(c)
     }
@@ -404,6 +405,30 @@ impl Controller {
 
     pub fn save_settings_file(&self, path: &Path) -> Result<(), String> {
         std::fs::write(path, presets::write_settings(&self.settings())).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Re-read the list of available phantoms (after importing, making or deleting one)
+    pub fn refresh_phantoms(&mut self) {
+        let names = phantom::phantom_names();
+        self.state_mut("object").options = names.iter().map(|n| Opt { label: n.clone(), value: Value::Str(n.clone()) }).collect();
+    }
+
+    /// Switch to phantom `name`; `reload` forces re-reading its files (e.g. after editing)
+    pub fn select_phantom(&mut self, name: &str, reload: bool) {
+        self.refresh_phantoms();
+        if reload && self.phantom.name == name {
+            match phantom::load(name, self.inputs.min_voxel_size) {
+                Ok(ph) => {
+                    self.phantom = Arc::new(ph);
+                    self.protocol = Arc::new(protocol::compute(&self.inputs, &self.phantom));
+                    self.generation += 1;
+                    self.sync_with_graph();
+                }
+                Err(e) => self.messages.push(e),
+            }
+        } else {
+            self.on_change("object", Value::Str(name.to_string()));
+        }
     }
 
     pub fn set_reference_snr(&mut self) {

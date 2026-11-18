@@ -7,7 +7,7 @@ SpinSight is an MRI simulator created for educational puposes. It jointly visual
 
 This repository contains two implementations:
 
-* **SpinSight for desktop (Rust)** – a native application shipped as a single standalone executable for Windows, macOS and Linux. It is a port of the Python simulator and computes the same images, but much faster (see [Performance](#performance)).
+* **SpinSight for desktop (Rust)** – a native application shipped as a single standalone executable for Windows, macOS and Linux, laid out like an MR scanner console and with a phantom maker. It is a port of the Python simulator and computes the same images, but much faster (see [Performance](#performance)).
 * **SpinSight for the web browser (Python)** – the original implementation in [spinsight/](./spinsight), run as a browser dashboard (see [Python version](#python-version)).
 
 ## Download (desktop version)
@@ -19,7 +19,34 @@ Get the file for your computer from the **[latest release](../../releases/latest
 | macOS 11+ (Apple Silicon and Intel) | `SpinSight-macos-universal.zip` | Unzip and move *SpinSight.app* to *Applications*. The app is not notarised: the first time, right-click → *Open*. |
 | Linux x86-64 | `SpinSight-linux-x86_64.tar.gz` | `tar xzf SpinSight-linux-x86_64.tar.gz && ./SpinSight-linux-x86_64/spinsight` |
 
-Help mode (**? Help** in the top bar) provides explanations of each parameter; hovering the help icon of TE, TR or TI highlights the interval in the pulse sequence diagram. The **☰** button opens the settings panel with phantom, field strength, parameter style, presets and loading/saving of settings files (TOML, compatible with the Python version).
+### Using the desktop version
+The window is organised like the console of an MR scanner:
+
+* **Exam bar** (top): phantom ("patient"), field strength, parameter style (how resolution and bandwidth are entered, as on scanners of different vendors), the loaded protocol, help mode and light/dark theme.
+* **Browser** (left, **☰**): protocols (presets; open/save protocol files in TOML, compatible with the Python version), phantoms (import, phantom maker, delete own phantoms) and the k-space cache.
+* **Viewing** (centre): MR image, k-space and pulse sequence diagram, each switchable. Hover a gradient, RF pulse or sampling window in the sequence diagram to see its properties and its path in k-space.
+* **Parameter card** (bottom) with the tabs *Routine*, *Contrast*, *Resolution*, *Geometry*, *Sequence* and *Recon*, and the status line with acquisition time (TA), voxel size, relative SNR, bandwidth, fat/water shift and number of shots.
+
+Help mode (**? Help**) provides explanations of each parameter; hovering TE, TR or TI highlights the interval in the pulse sequence diagram.
+
+### Own phantoms: import and phantom maker
+* **Import…** (or drop a file onto the window) accepts an SVG drawing (a dialog asks which tissue each fill colour is, unless a `.toml` colormap lies next to it), a TOML ellipse phantom, a PNG label image with its colormap, or any image (PNG, JPEG, TIFF, BMP, …), which opens in the phantom maker.
+* **Phantom maker…** makes a phantom from an image and/or drawn shapes:
+  1. *Image (optional)* – the image is segmented into 2–8 intensity classes (k-means on the gray levels, with optional smoothing); choose the tissue of each class (the darkest class is background by default) and the physical image width.
+  2. *Draw shapes* – ellipses, rectangles and polygons with a tissue (or the eraser), painted on top of the image in the order of the shape list; shapes can be selected, moved, reordered and deleted.
+  3. *Save* – stores the phantom as a label image; *Save and use* switches to it right away.
+
+![](docs/phantom_maker.png)
+
+Own phantoms are marked with ✎ in the phantom list and can be deleted there; **Show phantom folder** opens the folder in the file manager.
+
+### Where files are stored
+| | macOS | Windows | Linux |
+|---|---|---|---|
+| Own phantoms | `~/Library/Application Support/se.uu.SpinSight/phantoms` | `%APPDATA%\uu\SpinSight\data\phantoms` | `~/.local/share/spinsight/phantoms` |
+| k-space cache | `~/Library/Caches/se.uu.SpinSight/phantoms` | `%LOCALAPPDATA%\uu\SpinSight\cache\phantoms` | `~/.cache/spinsight/phantoms` |
+
+The cache holds the computed k-space of each phantom that has been opened (single precision): about 7 MB for *brain*, 53 MB for *abdomen* and 5 MB for *Shepp-Logan*. The browser shows its size and has buttons to open the folder and to clear it; files of older versions are removed automatically. Without cache the k-space is simply recomputed (0.1–2 s).
 
 ### Command line options
 ```
@@ -31,6 +58,8 @@ spinsight [OPTIONS]
         --show-kspace             show k-space at startup
         --help-mode               start in help mode
         --set <name=value>        set a parameter at startup (repeatable), e.g. --set TE=80
+        --phantom-maker [IMAGE]   open the phantom maker at startup (optionally with an image)
+        --import <FILE>           import a phantom file (.svg with .toml colormap, .toml, label .png) and exit
         --export <FILE.png>       render the MR image to a PNG file and exit (no GUI)
         --export-kspace <FILE>    also write the k-space display to a PNG file
         --benchmark               print computation times and exit
@@ -71,10 +100,11 @@ The release workflow ([.github/workflows/release.yml](./.github/workflows/releas
 |---|---|---|
 | `src/protocol.rs` | `nodes/*` (scalar part), `sequence.py` | derived parameters, pulse sequence timing, parameter bounds, SNR, scan time |
 | `src/imaging.rs` | `nodes/kspace_simulation.py`, `kspace_processing.py`, `image_reconstruction.py` | k-space sampling, contrast, noise, homodyne, apodization, zero filling, reconstruction |
-| `src/phantom.rs`, `src/svg.rs` | `phantom.py` | phantom shapes and analytic k-space |
+| `src/phantom.rs`, `src/svg.rs` | `phantom.py` | phantom shapes (incl. label images) and analytic k-space |
+| `src/phantom_maker.rs` | – | segmentation, drawn shapes, phantom import |
 | `src/nufft.rs`, `src/voronoi.rs` | `recon.py` (finufft / mri-nufft) | non-Cartesian gridding |
 | `src/controller.rs` | `controller.py` | parameter styles, bounds, visibility, presets, settings files |
-| `src/gui/` | `gui.py`, `nodes/*_plot.py` | the egui user interface |
+| `src/gui/` | `gui.py`, `nodes/*_plot.py` | the egui user interface (`maker.rs`: phantom maker window) |
 
 ## Phantom construction
 To create a new phantom, add a directory with the phantom name containing files with the same name as the directory. For the Python version, the directory goes under [spinsight/phantoms](./spinsight/phantoms). The desktop version has the built-in phantoms compiled in and reads additional phantoms from a `phantoms` folder next to the executable, from the folder given by the environment variable `SPINSIGHT_PHANTOMS`, or from `phantoms` in the SpinSight data directory (`~/.local/share/spinsight` on Linux, `~/Library/Application Support/se.uu.SpinSight` on macOS, `%APPDATA%\uu\SpinSight\data` on Windows). Two formats are supported:
@@ -89,6 +119,16 @@ The specified `.svg` file must meet the following specifications:
 * All paths must be closed
 * All paths must have a fill color matching a hexcolor defined in the `.toml` file (this defines the tissue).
 * Only polygons are supported (not Bézier curves etc.)
+
+### A pair of `.png` and `.toml` files (desktop version only)
+A label image: every pixel colour listed in the `.toml` file is a tissue, all other colours are background. The `.toml` file also gives the pixel size in mm:
+```toml
+pixel_size = 0.5
+'#00ff00' = 'Gray matter'
+'#d40000' = 'White matter'
+'#00ffff' = 'CSF'
+```
+The k-space of such a phantom is computed exactly for square pixels. The phantom maker saves its phantoms in this format.
 
 ## Python version
 Install using pip:

@@ -16,6 +16,7 @@ pub mod imaging;
 pub mod nufft;
 pub mod params;
 pub mod phantom;
+pub mod phantom_maker;
 pub mod presets;
 pub mod protocol;
 pub mod recon;

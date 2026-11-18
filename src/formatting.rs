@@ -45,6 +45,17 @@ pub fn scantime(milliseconds: f64) -> String {
     }
 }
 
+/// Acquisition time like on a scanner console: "m:ss" (or "h:mm:ss")
+pub fn ta(milliseconds: f64) -> String {
+    let total = (milliseconds / 1000.0).round().max(0.0) as i64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 pub fn pixel_bandwidth(bw: f64) -> String {
     format!("{} Hz / pixel", format_float(bw, 3))
 }
@@ -117,5 +128,7 @@ mod tests {
         assert_eq!(scantime(1_620_000.0), "27 min 0 sec");
         assert_eq!(scantime(5500.0), "5.5 sec");
         assert_eq!(scantime(500.0), "500 ms");
+        assert_eq!(ta(100_000.0), "1:40");
+        assert_eq!(ta(3_725_000.0), "1:02:05");
     }
 }

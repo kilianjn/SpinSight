@@ -76,7 +76,7 @@ fn images_match_python() {
             inp.set(k, &v).unwrap();
         }
         let ph = phantom::load(&inp.object, inp.min_voxel_size).unwrap();
-        let pk = phantoms.entry(inp.object.clone()).or_insert_with(|| phantom::load_kspace(&ph, None)).clone();
+        let pk = phantoms.entry(inp.object.clone()).or_insert_with(|| phantom::compute_kspace(&ph, None)).clone();
         let p = protocol::compute(&inp, &ph);
         let mut sim = Simulator::default();
         let t = Instant::now();
