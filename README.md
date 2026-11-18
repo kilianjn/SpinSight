@@ -64,7 +64,7 @@ cargo run --release
 ```
 No other libraries are needed for building. On Linux the program needs X11 or Wayland with OpenGL at runtime. Run the tests with `cargo test --release`; with the environment variable `SPINSIGHT_PYREF` pointing to raw arrays dumped from the Python version, `tests/reference_images.rs` additionally compares phantom k-space and images.
 
-The release workflow ([.github/workflows/release.yml](./.github/workflows/release.yml)) builds the executables for all platforms; pushing a tag `v*` (or to `main`) publishes them as a GitHub release.
+The release workflow ([.github/workflows/release.yml](./.github/workflows/release.yml)) builds the executables for all platforms on every push; pushing a tag `v*`, pushing to `main`, or pushing a commit whose message contains `[release]` publishes them as the GitHub release `v<version>` (version from `Cargo.toml`).
 
 ### Source overview
 | Module | Python counterpart | Content |

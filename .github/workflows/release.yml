@@ -2,8 +2,9 @@ name: Build & release
 
 # Builds standalone SpinSight executables for Windows, macOS and Linux and publishes them as a
 # GitHub Release.
-#  * push of a tag "v*"   → release for that tag
-#  * push to main         → (re)publishes the release "v<version from Cargo.toml>"
+#  * push of a tag "v*"                        → release for that tag
+#  * push to main, or a push whose head commit
+#    message contains "[release]" (any branch)  → (re)publishes the release "v<version from Cargo.toml>"
 #  * pull requests / other pushes / manual runs → test + build (downloadable workflow artifacts)
 on:
   push:
@@ -145,7 +146,9 @@ jobs:
 
   release:
     needs: [test, build]
-    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    if: >-
+      github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+      || contains(github.event.head_commit.message, '[release]'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
