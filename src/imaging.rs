@@ -21,27 +21,99 @@ use crate::protocol::{component_pd_t1w, pyround, Inputs, Protocol};
 use crate::recon::{crop_or_pad, fft_shifted, get_k_axis, homodyne_weights, ifft_shifted, radial_tukey, sinc_interpolate, sinc_kernel};
 use crate::sequence::{get_signal, Waveform};
 
-/// Result of one simulation run (everything the image / k-space / signal displays need)
-#[derive(Debug, Clone)]
-pub struct ImageResult {
-    /// displayed image values (image mode operator applied), shape recon_matrix
-    pub image: Array2<f64>,
+/// Result of one simulation run. Display operators (image/k-space mode, exponents) and the
+/// signal curves of the displayed shot are applied afterwards, see [`display_image`],
+/// [`display_kspace`] and [`signal_curves`], so they can change without re-simulating.
+#[derive(Debug, Clone, Default)]
+pub struct SimOutput {
+    /// reconstructed complex image, shape recon_matrix
+    pub image_array: Array2<C64>,
     /// FOV [mm] per dimension (dim 0 = vertical)
     pub fov: [f64; 2],
-    /// displayed k-space values, rows = dim 0
-    pub kspace: Array2<f64>,
-    pub kspace_axes: [Vec<f64>; 2],
-    pub signal_curves: Vec<Waveform>,
+    /// gridded (measured) k-space and its axes [1/mm]
+    pub gridded: Array2<C64>,
+    pub grid_axes: [Vec<f64>; 2],
+    /// processed (homodyne, apodized, zero-filled) k-space and its axes
+    pub zerofilled: Array2<C64>,
+    pub processed_axes: [Vec<f64>; 2],
+    /// measured k-space samples (n0, n1, na)
+    pub measured: Vec<C64>,
+    pub measured_shape: [usize; 3],
+    /// time after excitation per (i, j) sample position
+    pub tae: Vec<f64>,
     pub timings: Vec<(&'static str, f64)>,
 }
 
-/// Intermediate arrays exposed for testing
-#[derive(Debug, Clone, Default)]
-pub struct Intermediate {
-    pub measured: Vec<C64>,
-    pub measured_shape: [usize; 3],
-    pub gridded: Array2<C64>,
-    pub image_array: Array2<C64>,
+/// Image values for display (`OPERATORS[image_mode](image_array)`)
+pub fn display_image(out: &SimOutput, image_mode: &str) -> Array2<f64> {
+    let op = Operator::from_name(image_mode);
+    out.image_array.map(|z| op.apply(*z))
+}
+
+/// k-space values and axes for display (`kspace` node)
+pub fn display_kspace(out: &SimOutput, kspace_mode: &str, exponent: f64, processed: bool) -> (Array2<f64>, [Vec<f64>; 2]) {
+    let (src, axes) = if processed { (&out.zerofilled, &out.processed_axes) } else { (&out.gridded, &out.grid_axes) };
+    let op = Operator::from_name(kspace_mode);
+    let e = if op == Operator::Phase { 1.0 } else { exponent };
+    let k = src.map(|z| {
+        let v = op.apply(*z);
+        if v == 0.0 {
+            0.0
+        } else {
+            v.signum() * v.abs().powf(e)
+        }
+    });
+    (k, axes.clone())
+}
+
+/// Signal curves of the displayed shot for the sequence diagram (`signal_curves`)
+pub fn signal_curves(p: &Protocol, out: &SimOutput, signal_exponent: f64) -> Vec<Waveform> {
+    let [n0, n1, na] = out.measured_shape;
+    if out.measured.is_empty() || n0 * n1 * na != out.measured.len() || out.tae.len() != n0 * n1 {
+        return vec![];
+    }
+    let n_read = if p.freq_dir == 0 { n0 } else { n1 };
+    let n_pe = if p.freq_dir == 0 { n1 } else { n0 };
+    let max_abs = out.measured.iter().fold(0.0f64, |m, z| m.max(z.norm()));
+    let scale = if max_abs > 0.0 { 1.0 / max_abs } else { 0.0 };
+    let spoke = if p.is_radial { p.shot.min(na - 1) } else { 0 };
+    let mut curves = Vec::new();
+    for rf in 0..p.turbo_factor {
+        for gr in 0..p.epi_factor {
+            let ky = p.pe(p.shot, rf, gr);
+            if ky >= n_pe {
+                continue;
+            }
+            let mut waveform = Vec::with_capacity(n_read);
+            let mut t = Vec::with_capacity(n_read);
+            for r in 0..n_read {
+                let (i, j) = if p.freq_dir == 0 { (r, ky) } else { (ky, r) };
+                waveform.push(out.measured[(i * n1 + j) * na + spoke].re);
+                t.push(out.tae[i * n1 + j]);
+            }
+            curves.push(get_signal(&waveform, &t, scale, signal_exponent, "sampling"));
+        }
+    }
+    curves
+}
+
+/// Simulation key: the inputs that influence the simulated data (display-only inputs reset)
+pub fn simulation_key(inp: &Inputs) -> Inputs {
+    let d = Inputs::default();
+    Inputs {
+        show_fov: d.show_fov,
+        show_te_span: false,
+        show_tr_span: false,
+        show_ti_span: false,
+        reference_tissue: d.reference_tissue.clone(),
+        image_mode: d.image_mode.clone(),
+        show_processed_kspace: d.show_processed_kspace,
+        kspace_exponent: d.kspace_exponent,
+        kspace_mode: d.kspace_mode.clone(),
+        shot: 0,
+        signal_exponent: d.signal_exponent,
+        ..inp.clone()
+    }
 }
 
 struct CompsCache {
@@ -228,7 +300,7 @@ impl Simulator {
     }
 
     /// Run the simulation and reconstruction
-    pub fn run(&mut self, p: &Protocol, inp: &Inputs, ph: &Phantom, pk: &PhantomKspace) -> (ImageResult, Intermediate) {
+    pub fn run(&mut self, p: &Protocol, inp: &Inputs, ph: &Phantom, pk: &PhantomKspace) -> SimOutput {
         let mut timings = Vec::new();
         let t0 = Instant::now();
         let axes = k_axes(p);
@@ -383,59 +455,31 @@ impl Simulator {
         }
         let oversampled_image = ifft_shifted(&zerofilled, pixel_shifts, sample_shifts);
         let image_array = crop_or_pad(&oversampled_image, recon_matrix);
-        let op = Operator::from_name(&inp.image_mode);
-        let image = image_array.map(|z| op.apply(*z));
         timings.push(("reconstruction", t3.elapsed().as_secs_f64()));
 
-        // ---- k-space display
-        let (kdisp_src, kspace_axes) = if inp.show_processed_kspace {
-            let axes = [0, 1].map(|d| {
-                let mut ax = get_k_axis(oversampled[d], p.fov[d] / recon_matrix[d] as f64);
-                if (oversampled[d] as i64 - full_k_matrix[d] as i64).rem_euclid(2) == 1 {
-                    let shift = recon_matrix[d] as f64 / (2.0 * oversampled[d] as f64 * p.fov[d]);
-                    for k in ax.iter_mut() {
-                        *k -= shift;
-                    }
+        let processed_axes = [0, 1].map(|d| {
+            let mut ax = get_k_axis(oversampled[d], p.fov[d] / recon_matrix[d] as f64);
+            if (oversampled[d] as i64 - full_k_matrix[d] as i64).rem_euclid(2) == 1 {
+                // half-sample shift axis when odd number of zeroes
+                let shift = recon_matrix[d] as f64 / (2.0 * oversampled[d] as f64 * p.fov[d]);
+                for k in ax.iter_mut() {
+                    *k -= shift;
                 }
-                ax
-            });
-            (&zerofilled, axes)
-        } else {
-            (&gridded, grid_axes.clone())
-        };
-        let kop = Operator::from_name(&inp.kspace_mode);
-        let exponent = if kop == Operator::Phase { 1.0 } else { inp.kspace_exponent };
-        let kspace = kdisp_src.map(|z| {
-            let v = kop.apply(*z);
-            v.signum() * v.abs().powf(exponent) * if v == 0.0 { 0.0 } else { 1.0 }
-        });
-
-        // ---- signal curves for the sequence diagram
-        let max_abs = measured.iter().fold(0.0f64, |m, z| m.max(z.norm()));
-        let scale = if max_abs > 0.0 { 1.0 / max_abs } else { 0.0 };
-        let spoke = if p.is_radial { p.shot } else { 0 };
-        let mut signal_curves = Vec::new();
-        for rf in 0..p.turbo_factor {
-            for gr in 0..p.epi_factor {
-                let ky = p.pe(p.shot, rf, gr);
-                if ky >= p.num_sampled_phase_encodes {
-                    continue;
-                }
-                let mut waveform = Vec::with_capacity(n_read);
-                let mut t = Vec::with_capacity(n_read);
-                for r in 0..n_read {
-                    let (i, j) = if p.freq_dir == 0 { (r, ky) } else { (ky, r) };
-                    waveform.push(measured[(i * n1 + j) * na + spoke.min(na - 1)].re);
-                    t.push(tae_grid[i * n1 + j]);
-                }
-                signal_curves.push(get_signal(&waveform, &t, scale, inp.signal_exponent, "sampling"));
             }
-        }
+            ax
+        });
         timings.push(("total", t0.elapsed().as_secs_f64()));
-
-        (
-            ImageResult { image, fov: p.fov, kspace, kspace_axes, signal_curves, timings },
-            Intermediate { measured, measured_shape: [n0, n1, na], gridded, image_array },
-        )
+        SimOutput {
+            image_array,
+            fov: p.fov,
+            gridded,
+            grid_axes,
+            zerofilled,
+            processed_axes,
+            measured,
+            measured_shape: [n0, n1, na],
+            tae: tae_grid,
+            timings,
+        }
     }
 }

@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn polygon_transform_matches_reference() {
-        let v = vec![[0.0, 0.0], [1.0, 3.0], [4.0, 2.5], [5.0, -1.0], [2.0, -2.0], [2.0, -2.0 + 1e-9]];
+        let v = [[0.0, 0.0], [1.0, 3.0], [4.0, 2.5], [5.0, -1.0], [2.0, -2.0], [2.0, -2.0 + 1e-9]];
         let a0: Vec<f64> = (-6..6).map(|i| i as f64 * 0.07).collect();
         let a1: Vec<f64> = (-5..7).map(|i| i as f64 * 0.05).collect();
         let k = kspace_polygon(&v[..5], &a0, &a1);

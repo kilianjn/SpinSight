@@ -1237,7 +1237,7 @@ fn get_k_coords(t: &[f64], gp: &[f64], tp: &[f64], refocus_intervals: &[(f64, f6
     }
     for &(start, stop) in refocus_intervals {
         // k inversion of refocusing pulse corresponds to negative shift of 2k
-        let k_before = t.iter().zip(k.iter()).filter(|(tt, _)| **tt <= start).map(|(_, kk)| *kk).last().unwrap_or(0.0);
+        let k_before = t.iter().zip(k.iter()).rev().find(|(tt, _)| **tt <= start).map(|(_, kk)| *kk).unwrap_or(0.0);
         for i in 0..t.len() {
             if t[i] > start && t[i] < stop {
                 k[i] -= 2.0 * k_before * (t[i] - start) / (stop - start);

@@ -80,7 +80,7 @@ fn images_match_python() {
         let p = protocol::compute(&inp, &ph);
         let mut sim = Simulator::default();
         let t = Instant::now();
-        let (_res, im) = sim.run(&p, &inp, &ph, &pk);
+        let im = sim.run(&p, &inp, &ph, &pk);
         let secs = t.elapsed().as_secs_f64();
         let measured = read_c64(&dir.join(format!("imgref/{config}.measured_kspace.bin")));
         let gridded = read_c64(&dir.join(format!("imgref/{config}.gridded_kspace.bin")));
