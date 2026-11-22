@@ -289,6 +289,51 @@ Selects which acquisition shot is displayed in the pulse sequence diagram."#,
         r#"# Signal exponent
 Applies nonlinear intensity scaling to the displayed signal to make low-signal values more visible. Affects visualization only."#,
     ),
+    (
+        "slice_orientation",
+        r#"# Slice orientation
+Main orientation of the slices in the 3D phantom: transversal (axial), sagittal or coronal. The slices can additionally be angulated (tilted) towards the other orientations. In the planning view, the slices are shown in yellow in the three localizer images."#,
+    ),
+    (
+        "slice_angle_1",
+        r#"# Angulation
+Tilts the slices about the first in-plane axis towards the orientation given in the label (e.g. *Tra>Cor*: a transversal slice tilted towards coronal). Can also be set by dragging the ⟲ handle in the localizer images. Oblique slices are used e.g. to align brain slices with the AC–PC line."#,
+    ),
+    (
+        "slice_angle_2",
+        r#"# Angulation
+Tilts the slices about the second in-plane axis towards the orientation given in the label (e.g. *Tra>Sag*). Can also be set by dragging the ⟲ handle in the localizer images."#,
+    ),
+    (
+        "slice_pos_LR",
+        r#"# Slice position R/L
+Position of the centre of the slice stack in the right–left direction of the patient (R = right, L = left), in mm from the centre of the phantom. Can also be set by dragging the slices in the localizer images."#,
+    ),
+    (
+        "slice_pos_AP",
+        r#"# Slice position A/P
+Position of the centre of the slice stack in the anterior–posterior direction of the patient (A = anterior, P = posterior), in mm. Can also be set by dragging the slices in the localizer images."#,
+    ),
+    (
+        "slice_pos_HF",
+        r#"# Slice position H/F
+Position of the centre of the slice stack in the head–feet direction of the patient (H = head, F = feet), in mm. Can also be set by dragging the slices in the localizer images."#,
+    ),
+    (
+        "num_slices",
+        r#"# Number of slices
+Number of parallel slices in the stack. In multi-slice imaging, the other slices are excited during the waiting time of each repetition (TR), so additional slices are free as long as they fit into TR. If they do not fit, the acquisition is split into several *concatenations*, which multiplies the scan time."#,
+    ),
+    (
+        "slice_gap",
+        r#"# Distance factor
+Gap between neighbouring slices in percent of the slice thickness. A gap reduces cross-talk between slices (imperfect slice profiles) and lets a stack with fewer slices cover more of the anatomy, but tissue in the gap is not imaged."#,
+    ),
+    (
+        "displayed_slice",
+        r#"# Displayed slice
+Selects which slice of the stack is simulated live and shown as MR image. Press *▶ Scan* to acquire all slices as a series of the examination."#,
+    ),
 ];
 
 pub fn tooltip(name: &str) -> Option<&'static str> {

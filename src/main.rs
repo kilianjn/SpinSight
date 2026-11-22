@@ -29,6 +29,9 @@ OPTIONS:
         --import <FILE>           import a phantom file (.svg with .toml colormap, .toml, label .png) and exit
         --export <FILE.png>       render the MR image to a PNG file and exit (no GUI)
         --export-kspace <FILE>    also write the k-space display to a PNG file
+        --scan <DIR>              3D phantom: acquire all planned slices and write them as PNG
+                                  files to DIR (no GUI); plan with --set slice_orientation=…,
+                                  slice_pos_HF=…, slice_angle_1=…, num_slices=… etc.
         --benchmark               print computation times and exit
     -V, --version                 print the version
     -h, --help                    print this help
@@ -43,6 +46,7 @@ struct Cli {
     sliders_with_text: bool,
     export: Option<PathBuf>,
     export_kspace: Option<PathBuf>,
+    scan: Option<PathBuf>,
     sets: Vec<(String, String)>,
     benchmark: bool,
     show_sequence: bool,
@@ -59,6 +63,7 @@ fn parse_args() -> Result<Cli, String> {
         sliders_with_text: false,
         export: None,
         export_kspace: None,
+        scan: None,
         sets: vec![],
         benchmark: false,
         show_sequence: false,
@@ -96,6 +101,7 @@ fn parse_args() -> Result<Cli, String> {
             "-t" | "--slidersWithText" => cli.sliders_with_text = true,
             "--export" => cli.export = Some(PathBuf::from(value("--export")?)),
             "--export-kspace" => cli.export_kspace = Some(PathBuf::from(value("--export-kspace")?)),
+            "--scan" => cli.scan = Some(PathBuf::from(value("--scan")?)),
             "--set" => {
                 let s = value("--set")?;
                 let (k, v) = s.split_once('=').ok_or("--set expects name=value")?;
@@ -169,6 +175,25 @@ fn headless(cli: &Cli) -> Result<(), String> {
     }
     for m in ctrl.messages.drain(..) {
         eprintln!("{m}");
+    }
+    if let Some(dir) = &cli.scan {
+        let vol = ctrl.phantom.volume.clone().ok_or("--scan needs a 3D phantom (--set object=\"brain 3D\")")?;
+        let t = Instant::now();
+        let preset = ctrl.str("load_presets");
+        let name = if preset == spinsight::params::CUSTOM_PRESET { "series".to_string() } else { preset.to_string() };
+        let mut series = spinsight::exam::acquire(&ctrl.inputs, &vol, &name, 1, 1, None).ok_or("scan cancelled")?;
+        series.relative_snr = ctrl.info.relative_snr.clone();
+        let folder = spinsight::exam::save_series(&series, dir)?;
+        println!(
+            "acquired {} slices in {:.2} s (scan time on a scanner: {}); images in {}",
+            series.images.len(),
+            t.elapsed().as_secs_f64(),
+            ctrl.info.scantime,
+            folder.display()
+        );
+        if cli.export.is_none() && cli.export_kspace.is_none() {
+            return Ok(());
+        }
     }
     let t = Instant::now();
     let pk = phantom::load_kspace(&ctrl.phantom, None);
@@ -312,7 +337,7 @@ fn main() {
         }
         return;
     }
-    if cli.export.is_some() || cli.export_kspace.is_some() {
+    if cli.export.is_some() || cli.export_kspace.is_some() || cli.scan.is_some() {
         if let Err(e) = headless(&cli) {
             eprintln!("error: {e}");
             std::process::exit(1);

@@ -1,0 +1,15 @@
+The 3D brain phantom (assets/volumes/brain3d.*) is derived from the ICBM 152 Nonlinear
+Asymmetrical template version 2009c (MNI152NLin2009cAsym), obtained via TemplateFlow:
+Fonov VS, Evans AC, McKinstry RC, Almli CR, Collins DL. Unbiased nonlinear average age-appropriate
+brain templates from birth to adulthood. NeuroImage 2009;47:S102. Fonov V, Evans AC, Botteron K,
+Almli CR, McKinstry RC, Collins DL. Unbiased average age-appropriate atlases for pediatric studies.
+NeuroImage 2011;54(1):313-327. Ciric R et al. TemplateFlow. Nat Methods 2022;19:1568-1571.
+
+License of the template:
+
+Copyright (C) 1993–2004 Louis Collins, McConnell Brain Imaging Centre, Montreal Neurological Institute, McGill University.
+Permission to use, copy, modify, and distribute this software and its documentation for any purpose and without fee is 
+hereby granted, provided that the above copyright notice appear in all copies. The authors and McGill University make 
+no representations about the suitability of this software for any purpose. It is provided “as is” without express or 
+implied warranty. The authors are not responsible for any data loss, equipment damage, property loss, or injury to 
+subjects or patients resulting from the use or misuse of this software package.

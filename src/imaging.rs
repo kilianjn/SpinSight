@@ -238,6 +238,11 @@ fn make_gridder(k: &[[f64; 2]], fov: [f64; 2], with_density: bool) -> (Nufft2d, 
 }
 
 impl Simulator {
+    /// Simulator with its own noise sequence (e.g. one per acquired series)
+    pub fn with_seed(seed: u64) -> Self {
+        Simulator { rng: Rng::new(seed), ..Default::default() }
+    }
+
     /// Draw a new noise realisation on the next run
     pub fn renew_noise(&mut self) {
         self.noise_generation += 1;
@@ -332,6 +337,7 @@ impl Simulator {
             })
             .collect();
         let nt = tw.len();
+        let volume_slice = ph.is_volume_slice();
         // tae[i, j]: time after excitation
         let mut weights = vec![C64::new(0.0, 0.0); n0 * n1 * nt];
         let mut tae_grid = vec![0.0; n0 * n1];
@@ -346,7 +352,9 @@ impl Simulator {
             let t_rel = if p.is_gradient_echo { tae } else { tae - p.spin_echoes[i_pe] };
             let e2p = (-t_rel.abs() / T2_PRIM).exp();
             let kabs = (axes[0][i] * axes[0][i] + axes[1][j] * axes[1][j]).sqrt();
-            let thick = inp.slice_thickness * (-0.5 * inp.slice_thickness * kabs).exp();
+            // 2D phantoms: slice thickness mimicked by a Lorentzian k-space filter; slices through
+            // 3D phantoms already contain the thickness integral (real partial volume)
+            let thick = if volume_slice { 1.0 } else { inp.slice_thickness * (-0.5 * inp.slice_thickness * kabs).exp() };
             // fat: Σ_r ratio_r PD/T1w_r e^{-|t|/T2_r} e^{2πi γ B0 shift_r t_rel}
             let mut fat = C64::new(0.0, 0.0);
             for (r, res) in FAT_RESONANCES.iter().enumerate() {

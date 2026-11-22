@@ -1,13 +1,13 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-![](docs/screenshot.png)
+![](docs/exam.png)
 
 # SpinSight MRI simulator
-SpinSight is an MRI simulator created for educational puposes. It jointly visualizes the imaging parameters, the MRI pulse sequence, the k-space data matrix, and the MR image. These are updated in real-time when the user changes parameters. The data is simulated from computational 2D phantoms in vector graphics format (SVG).
+SpinSight is an MRI simulator created for educational puposes. It jointly visualizes the imaging parameters, the MRI pulse sequence, the k-space data matrix, and the MR image. These are updated in real-time when the user changes parameters. The data is simulated from computational 2D phantoms in vector graphics format (SVG); the desktop version additionally has a 3D brain phantom on which slices are planned and acquired as in an MR examination.
 
 This repository contains two implementations:
 
-* **SpinSight for desktop (Rust)** – a native application shipped as a single standalone executable for Windows, macOS and Linux, laid out like an MR scanner console and with a phantom maker. It is a port of the Python simulator and computes the same images, but much faster (see [Performance](#performance)).
+* **SpinSight for desktop (Rust)** – a native application shipped as a single standalone executable for Windows, macOS and Linux, laid out like an MR scanner console, with a 3D brain phantom, slice planning on three localizers, multi-slice scans and a phantom maker. It is a port of the Python simulator and computes the same images, but much faster (see [Performance](#performance)).
 * **SpinSight for the web browser (Python)** – the original implementation in [spinsight/](./spinsight), run as a browser dashboard (see [Python version](#python-version)).
 
 ## Download (desktop version)
@@ -23,11 +23,26 @@ Get the file for your computer from the **[latest release](../../releases/latest
 The window is organised like the console of an MR scanner:
 
 * **Exam bar** (top): phantom ("patient"), field strength, parameter style (how resolution and bandwidth are entered, as on scanners of different vendors), the loaded protocol, help mode and light/dark theme.
-* **Browser** (left, **☰**): protocols (presets; open/save protocol files in TOML, compatible with the Python version), phantoms (import, phantom maker, delete own phantoms) and the k-space cache.
-* **Viewing** (centre): MR image, k-space and pulse sequence diagram, each switchable. Hover a gradient, RF pulse or sampling window in the sequence diagram to see its properties and its path in k-space.
-* **Parameter card** (bottom) with the tabs *Routine*, *Contrast*, *Resolution*, *Geometry*, *Sequence* and *Recon*, and the status line with acquisition time (TA), voxel size, relative SNR, bandwidth, fat/water shift and number of shots.
+* **Browser** (left, **☰**): the examination (acquired series, see below), protocols (presets; open/save protocol files in TOML, compatible with the Python version for 2D phantoms), phantoms (import, phantom maker, delete own phantoms) and the k-space cache.
+* **Viewing** (centre): slice planning (3D phantom), MR image, k-space and pulse sequence diagram, each switchable. Hover a gradient, RF pulse or sampling window in the sequence diagram to see its properties and its path in k-space.
+* **Parameter card** (bottom) with the tabs *Routine*, *Contrast*, *Resolution*, *Geometry*, *Sequence* and *Recon*, and the status line with the **▶ Scan** button, acquisition time (TA), number of slices and concatenations, voxel size, relative SNR, bandwidth, fat/water shift and number of shots.
 
 Help mode (**? Help**) provides explanations of each parameter; hovering TE, TR or TI highlights the interval in the pulse sequence diagram.
+
+### 3D brain phantom: slice planning and examinations
+The default phantom, **brain 3D**, is a complete head volume (1 mm voxels, 189 × 220 × 184 mm): gray matter, white matter and CSF of the brain, and fat, muscle and bone/air of the head around it. It is derived from the MNI ICBM 152 2009c template (see [License](#license)); [tools/make_brain3d.py](./tools/make_brain3d.py) rebuilds it from the template files. Every slice is computed from the volume with its real thickness (partial volume of tissues over the slice profile), at any position and angulation.
+
+1. **Plan** – the *Planning* view shows three localizers (transversal, sagittal, coronal) with the planned slice stack in yellow, as on a scanner:
+   * drag the slices to move the stack, drag the **⟲** handle to angulate it (e.g. *Tra>Cor* to align transversal slices with the AC–PC line);
+   * click into a localizer to show that point in the other two, scroll with the mouse wheel through the localizer planes;
+   * the highlighted slice is the *displayed slice*, simulated live as MR image (with orientation labels A/P, R/L, H/F); the filled band marks exactly where it cuts each localizer image;
+   * *Routine* and *Geometry* tabs: slice orientation, angulations, position R/L, A/P, H/F, number of slices, distance factor (gap) and slice thickness.
+2. **Scan** – **▶ Scan** acquires all slices of the stack as a new series (each slice with its own noise; 25 slices take 1–2 s). The scan time (TA) accounts for multi-slice interleaving: as many slices as fit into TR are acquired together, more slices need *concatenations*, which multiply TA. With inversion recovery (FLAIR), slices are inverted interleaved.
+3. **Review** – the series appear in the *EXAM* list of the browser. Selecting one shows its images (slice slider, ↑/↓ keys) and its slices in cyan in the localizers. *Copy parameters* loads the protocol and slice position of a series (to repeat or modify it), *Save images…* writes the series as PNG files, *New exam* clears the list. *Live (planning)* returns to the live image of the current protocol.
+
+So a complete examination can be re-enacted, for example: a sagittal T2w TSE, then transversal T2w TSE and FLAIR angulated along the AC–PC line on it, then a coronal T1w – and the images compared side by side with the effects of TR, TE, TI, resolution, bandwidth or slice thickness.
+
+The 2D phantoms (*brain*, *abdomen*, *Shepp-Logan* and own phantoms) work as before (one slice, identical results to the Python version).
 
 ### Own phantoms: import and phantom maker
 * **Import…** (or drop a file onto the window) accepts an SVG drawing (a dialog asks which tissue each fill colour is, unless a `.toml` colormap lies next to it), a TOML ellipse phantom, a PNG label image with its colormap, or any image (PNG, JPEG, TIFF, BMP, …), which opens in the phantom maker.
@@ -62,9 +77,11 @@ spinsight [OPTIONS]
         --import <FILE>           import a phantom file (.svg with .toml colormap, .toml, label .png) and exit
         --export <FILE.png>       render the MR image to a PNG file and exit (no GUI)
         --export-kspace <FILE>    also write the k-space display to a PNG file
+        --scan <DIR>              3D phantom: acquire all planned slices and write them as PNG
+                                  files to DIR (no GUI)
         --benchmark               print computation times and exit
 ```
-Example: `spinsight --set load_presets=T2-FLAIR --set object=abdomen --export flair.png` renders an image without opening a window.
+Example: `spinsight --set load_presets=T2-FLAIR --set object=abdomen --export flair.png` renders an image without opening a window, and `spinsight --set load_presets=T1w-TSE --set slice_orientation=Coronal --set num_slices=20 --scan exam` acquires 20 coronal T1w slices of the 3D phantom into the folder `exam`.
 
 ## Performance
 The desktop version is a faithful port of the Python computation graph: the same sequence timing and parameter bounds, the same analytic phantom k-space, and the same reconstruction. The test suite cross-validates it against values computed with the Python version (protocol values agree to 10⁻⁹, Cartesian images to 10⁻¹², radial images to about 10⁻⁵, limited by the NUFFT accuracy). Measured on the same 4-core machine:
@@ -77,6 +94,8 @@ The desktop version is a faithful port of the Python computation graph: the same
 | Image, abdomen turbo spin echo | 0.75 s | 0.08 s |
 | Image, radial | 3.8 s | 0.11 s |
 | Image, PROPELLER | 4.7 s | 0.14 s |
+| Slice of the 3D phantom (new position or angulation, incl. image) | – | 0.06–0.1 s |
+| Multi-slice scan, 25 slices T2w TSE (3D phantom) | – | 1.9 s |
 
 The Python times exclude the time needed to render the browser dashboard. In the desktop version, changing contrast parameters (TE, TR, flip angle, …) re-uses the cached k-space and takes 6–20 ms, so images update continuously while a slider is dragged. Phantom k-space is cached on disk after the first computation.
 
@@ -101,10 +120,12 @@ The release workflow ([.github/workflows/release.yml](./.github/workflows/releas
 | `src/protocol.rs` | `nodes/*` (scalar part), `sequence.py` | derived parameters, pulse sequence timing, parameter bounds, SNR, scan time |
 | `src/imaging.rs` | `nodes/kspace_simulation.py`, `kspace_processing.py`, `image_reconstruction.py` | k-space sampling, contrast, noise, homodyne, apodization, zero filling, reconstruction |
 | `src/phantom.rs`, `src/svg.rs` | `phantom.py` | phantom shapes (incl. label images) and analytic k-space |
+| `src/volume.rs`, `src/geometry.rs` | – | 3D phantom (sampling, slices with thickness), slice geometry (orientation, angulation, stack) |
+| `src/exam.rs` | – | multi-slice acquisition of the planned stack into series |
 | `src/phantom_maker.rs` | – | segmentation, drawn shapes, phantom import |
 | `src/nufft.rs`, `src/voronoi.rs` | `recon.py` (finufft / mri-nufft) | non-Cartesian gridding |
 | `src/controller.rs` | `controller.py` | parameter styles, bounds, visibility, presets, settings files |
-| `src/gui/` | `gui.py`, `nodes/*_plot.py` | the egui user interface (`maker.rs`: phantom maker window) |
+| `src/gui/` | `gui.py`, `nodes/*_plot.py` | the egui user interface (`planning.rs`: localizers and slice planning, `exam_ui.rs`: scan and series, `maker.rs`: phantom maker window) |
 
 ## Phantom construction
 To create a new phantom, add a directory with the phantom name containing files with the same name as the directory. For the Python version, the directory goes under [spinsight/phantoms](./spinsight/phantoms). The desktop version has the built-in phantoms compiled in and reads additional phantoms from a `phantoms` folder next to the executable, from the folder given by the environment variable `SPINSIGHT_PHANTOMS`, or from `phantoms` in the SpinSight data directory (`~/.local/share/spinsight` on Linux, `~/Library/Application Support/se.uu.SpinSight` on macOS, `%APPDATA%\uu\SpinSight\data` on Windows). Two formats are supported:
@@ -153,6 +174,8 @@ If you use this software in your research, please cite:
 
 ## License
 SpinSight is distributed under the terms of the GNU General Public License. See [LICENSE.md](./LICENSE.md). The desktop version bundles the DejaVu Sans font ([license](./assets/fonts/LICENSE-DejaVu.txt)).
+
+The 3D brain phantom is derived from the ICBM 152 Nonlinear Asymmetrical template 2009c (MNI152NLin2009cAsym, obtained via [TemplateFlow](https://www.templateflow.org)), Copyright © 1993–2004 Louis Collins, McConnell Brain Imaging Centre, Montreal Neurological Institute, McGill University, distributed under a permissive license ([details and references](./assets/volumes/LICENSE-MNI.txt)): Fonov VS, Evans AC, McKinstry RC, Almli CR, Collins DL. *Unbiased nonlinear average age-appropriate brain templates from birth to adulthood.* NeuroImage 2009;47:S102. Fonov V et al. *Unbiased average age-appropriate atlases for pediatric studies.* NeuroImage 2011;54(1):313–327. As an average of many subjects, the template is smoother than a single brain, and the head ends below the cerebellum.
 
 ## Contact Information
 Johan Berglund, Ph.D.  

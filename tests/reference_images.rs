@@ -65,7 +65,8 @@ fn images_match_python() {
     let mut failures = Vec::new();
     let mut phantoms = std::collections::HashMap::new();
     for (config, m) in meta.as_object().unwrap() {
-        let mut inp = Inputs::default();
+        // the Python default phantom
+        let mut inp = Inputs { object: "brain".into(), ..Default::default() };
         for (k, v) in m["inputs"].as_object().unwrap() {
             let v = match v {
                 J::Number(n) => Value::Num(n.as_f64().unwrap()),

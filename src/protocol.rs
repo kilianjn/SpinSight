@@ -68,6 +68,14 @@ pub struct Inputs {
     pub do_zerofill: bool,
     pub shot: usize,
     pub signal_exponent: f64,
+    pub slice_orientation: String,
+    pub slice_angle_1: f64,
+    pub slice_angle_2: f64,
+    /// stack centre (RAS) [mm]
+    pub slice_pos: [f64; 3],
+    pub num_slices: usize,
+    pub slice_gap: f64,
+    pub displayed_slice: usize,
     pub constant_voxel_bounds: bool,
     pub constant_fov_bw_bounds: bool,
 }
@@ -118,6 +126,15 @@ pub const INPUT_NAMES: &[&str] = &[
     "do_zerofill",
     "shot",
     "signal_exponent",
+    "slice_orientation",
+    "slice_angle_1",
+    "slice_angle_2",
+    "slice_pos_LR",
+    "slice_pos_AP",
+    "slice_pos_HF",
+    "num_slices",
+    "slice_gap",
+    "displayed_slice",
 ];
 
 impl Default for Inputs {
@@ -171,6 +188,13 @@ impl Default for Inputs {
             do_zerofill: b("do_zerofill"),
             shot: u("shot"),
             signal_exponent: num("signal_exponent"),
+            slice_orientation: s("slice_orientation"),
+            slice_angle_1: num("slice_angle_1"),
+            slice_angle_2: num("slice_angle_2"),
+            slice_pos: [num("slice_pos_LR"), num("slice_pos_AP"), num("slice_pos_HF")],
+            num_slices: u("num_slices"),
+            slice_gap: num("slice_gap"),
+            displayed_slice: u("displayed_slice"),
             constant_voxel_bounds: false,
             constant_fov_bw_bounds: false,
         }
@@ -240,11 +264,40 @@ impl Inputs {
             "do_zerofill" => self.do_zerofill = b(),
             "shot" => self.shot = uint()?,
             "signal_exponent" => self.signal_exponent = num()?,
+            "slice_orientation" => self.slice_orientation = s(),
+            "slice_angle_1" => self.slice_angle_1 = num()?,
+            "slice_angle_2" => self.slice_angle_2 = num()?,
+            "slice_pos_LR" => self.slice_pos[0] = num()?,
+            "slice_pos_AP" => self.slice_pos[1] = num()?,
+            "slice_pos_HF" => self.slice_pos[2] = num()?,
+            "num_slices" => self.num_slices = uint()?.max(1),
+            "slice_gap" => self.slice_gap = num()?,
+            "displayed_slice" => self.displayed_slice = uint()?,
             "constant_voxel_bounds" => self.constant_voxel_bounds = b(),
             "constant_FOV_BW_bounds" => self.constant_fov_bw_bounds = b(),
             _ => return Err(format!("Input node {name} not found in graph")),
         }
         Ok(())
+    }
+}
+
+impl Inputs {
+    /// The planned slice stack (for 3D phantoms)
+    pub fn stack(&self) -> crate::geometry::StackSpec {
+        crate::geometry::StackSpec {
+            orientation: crate::geometry::Orientation::from_name(&self.slice_orientation),
+            angle1: self.slice_angle_1,
+            angle2: self.slice_angle_2,
+            center: self.slice_pos,
+            thickness: self.slice_thickness,
+            num_slices: self.num_slices.max(1),
+            gap: self.slice_gap,
+        }
+    }
+
+    /// Geometry of the displayed slice of the stack
+    pub fn displayed_slice_geometry(&self) -> crate::geometry::SliceGeometry {
+        self.stack().slice(self.displayed_slice.min(self.num_slices.max(1) - 1))
     }
 }
 
@@ -341,6 +394,9 @@ pub struct Protocol {
     pub noise_std: f64,
     pub snr: f64,
     pub scantime: f64,
+    /// slices per TR and number of concatenations of a multi-slice acquisition
+    pub slices_per_tr: usize,
+    pub concatenations: usize,
     pub spoke_angle: f64,
     pub k_angles: Vec<f64>,
     pub sampling_time: Vec<f64>,
@@ -1104,7 +1160,21 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
     };
     let reference_signal = decayed_signal * component_pd_t1w(&reference_tissue, &inp.sequence_type, tr, inp.ti, inp.fa, inp.field_strength).abs();
     let snr = reference_signal / noise_std;
-    let scantime = num_shots as f64 * inp.nsa * tr;
+    // multi-slice: slices are interleaved within TR; more slices than fit need concatenations
+    // (with inversion recovery, other slices are inverted and read out during the inversion time
+    // of a slice – interleaved inversion – so a slice occupies its inversion pulse plus its readout)
+    let slice_time = match &slice_select_inversion {
+        Some(inv) => {
+            let readout_start = rf_fatsat.as_ref().map_or(slice_select_excitation.t_start(), |r| r.t_start());
+            (spoiler.t_end() - readout_start) + (inv.t_end() - inv.t_start())
+        }
+        None => min_tr,
+    };
+    let slices_per_tr = ((tr / slice_time.max(1e-3)).floor() as usize).max(1);
+    // (only 3D phantoms have a slice stack; 2D phantoms are a single slice)
+    let num_slices = if ph.is_volume_slice() { inp.num_slices.max(1) } else { 1 };
+    let concatenations = num_slices.div_ceil(slices_per_tr);
+    let scantime = num_shots as f64 * inp.nsa * tr * concatenations as f64;
     let k_angles: Vec<f64> = (0..num_blades).map(|i| i as f64 * (PI / num_blades as f64)).collect();
     let spoke_angle = k_angles[shot.min(k_angles.len() - 1)].to_degrees();
 
@@ -1191,6 +1261,8 @@ pub fn compute(inp: &Inputs, ph: &Phantom) -> Protocol {
         noise_std,
         snr,
         scantime,
+        slices_per_tr,
+        concatenations,
         spoke_angle,
         k_angles,
         sampling_time,

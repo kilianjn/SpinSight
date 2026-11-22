@@ -1,7 +1,6 @@
 //! Background simulation thread: runs the k-space simulation and reconstruction for the most
 //! recent request, keeping the GUI responsive while parameters are changed.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -53,7 +52,10 @@ impl Worker {
             .name("simulation".into())
             .spawn(move || {
                 let mut sim = Simulator::default();
-                let mut kspaces: HashMap<u64, Arc<PhantomKspace>> = HashMap::new();
+                // phantom k-space in memory (least recently used first; slices of 3D phantoms
+                // change continuously while planning, so the number of entries is limited)
+                let mut kspaces: Vec<(u64, Arc<PhantomKspace>)> = Vec::new();
+                const MAX_CACHED: usize = 4;
                 while let Ok(mut job) = job_rx.recv() {
                     // only the newest request matters
                     let mut renew = job.renew_noise;
@@ -68,17 +70,30 @@ impl Worker {
                         }
                     }
                     st.busy.store(true, Ordering::Relaxed);
-                    let pk = match kspaces.get(&job.phantom.hash) {
-                        Some(k) => k.clone(),
+                    let pk = match kspaces.iter().position(|(h, _)| *h == job.phantom.hash) {
+                        Some(i) => {
+                            let e = kspaces.remove(i);
+                            let k = e.1.clone();
+                            kspaces.push(e);
+                            k
+                        }
                         None => {
                             let cached = phantom::is_cached(&job.phantom);
-                            *st.preparing_phantom.lock().unwrap() = Some(job.phantom.name.clone());
-                            notify();
+                            // the progress dialog only for (slow) first-time computations of 2D phantoms
+                            let show = !job.phantom.is_volume_slice();
+                            if show {
+                                *st.preparing_phantom.lock().unwrap() = Some(job.phantom.name.clone());
+                                notify();
+                            }
                             let t = Instant::now();
                             let k = Arc::new(phantom::load_kspace(&job.phantom, Some(&st.progress)));
-                            *st.last_phantom_secs.lock().unwrap() = Some((job.phantom.name.clone(), t.elapsed().as_secs_f64(), cached));
+                            let what = if job.phantom.is_volume_slice() { format!("{} (slice)", job.phantom.name) } else { job.phantom.name.clone() };
+                            *st.last_phantom_secs.lock().unwrap() = Some((what, t.elapsed().as_secs_f64(), cached && show));
                             *st.preparing_phantom.lock().unwrap() = None;
-                            kspaces.insert(job.phantom.hash, k.clone());
+                            kspaces.push((job.phantom.hash, k.clone()));
+                            if kspaces.len() > MAX_CACHED {
+                                kspaces.remove(0);
+                            }
                             k
                         }
                     };

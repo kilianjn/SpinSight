@@ -14,10 +14,12 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::array::{Array2, C64};
+use crate::array::{fft2_inplace, Array2, C64};
 use crate::constants;
+use crate::geometry::{Orientation, SliceGeometry, StackSpec};
 use crate::recon::{get_k_axis, rotation_matrix, sinc_interpolate, sinc_kernel};
 use crate::svg;
+use crate::volume::{self, Volume};
 
 /// Geometry of a shape. Coordinates are (dim 0, dim 1) = (y, x) [mm].
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +81,15 @@ pub struct Phantom {
     pub min_voxel_size: f64,
     /// content hash used as cache key
     pub hash: u64,
+    /// for slices through a 3D phantom: the volume and the slice position
+    pub volume: Option<Arc<Volume>>,
+    pub slice: Option<SliceGeometry>,
+}
+
+impl Phantom {
+    pub fn is_volume_slice(&self) -> bool {
+        self.volume.is_some()
+    }
 }
 
 /// Phantom k-space per tissue (same order as `Phantom::tissues`)
@@ -97,7 +108,8 @@ const BUILTIN: &[(&str, &str, &str)] = &[
 const BUILTIN_TOML: &[(&str, &str)] = &[("Shepp-Logan", include_str!("../spinsight/phantoms/Shepp-Logan/Shepp-Logan.toml"))];
 
 pub fn builtin_phantom_names() -> Vec<&'static str> {
-    let mut v: Vec<&str> = BUILTIN.iter().map(|b| b.0).collect();
+    let mut v: Vec<&str> = volume::builtin_names().to_vec();
+    v.extend(BUILTIN.iter().map(|b| b.0));
     v.extend(BUILTIN_TOML.iter().map(|b| b.0));
     v
 }
@@ -439,8 +451,44 @@ fn fnv1a(bytes: &[u8], mut h: u64) -> u64 {
     h
 }
 
+/// Default slice through a 3D phantom (transversal, through the lateral ventricles)
+pub fn default_slice() -> SliceGeometry {
+    StackSpec { orientation: Orientation::Transversal, angle1: 0.0, angle2: 0.0, center: [0.0, -15.0, 18.0], thickness: 3.0, num_slices: 1, gap: 0.0 }.slice(0)
+}
+
+/// 2D phantom of one slice through a 3D phantom. The phantom is centred on the slice centre
+/// (= FOV centre) and covers the tissue in the slice plane.
+pub fn slice_phantom(vol: &Arc<Volume>, geom: SliceGeometry, min_voxel_size: f64) -> Phantom {
+    let ext = vol.slice_extent(&geom).unwrap_or([5.0, 5.0]);
+    let margin = 4.0;
+    let matrix = [0, 1].map(|d| ((2.0 * (ext[d] + margin) / min_voxel_size).ceil() as usize).max(8));
+    let support = [0, 1].map(|d| matrix[d] as f64 * min_voxel_size);
+    let k_axes = k_axes_for(matrix, support);
+    let mut hash = fnv1a(&vol.hash.to_le_bytes(), 0xcbf29ce484222325);
+    for x in geom.center.iter().chain(geom.u.iter()).chain(geom.v.iter()).chain([geom.thickness, min_voxel_size].iter()) {
+        hash = fnv1a(&x.to_le_bytes(), hash);
+    }
+    hash = fnv1a(CACHE_VERSION.as_bytes(), hash);
+    Phantom {
+        name: vol.name.clone(),
+        tissues: vol.tissues.clone(),
+        shapes: vec![Vec::new(); vol.tissues.len()],
+        support,
+        center: [0.0, 0.0],
+        matrix,
+        k_axes,
+        min_voxel_size,
+        hash,
+        volume: Some(vol.clone()),
+        slice: Some(geom),
+    }
+}
+
 /// Load the geometry of phantom `name` (fast; no k-space computation)
 pub fn load(name: &str, min_voxel_size: f64) -> Result<Phantom, String> {
+    if let Some(vol) = volume::builtin(name) {
+        return Ok(slice_phantom(&vol, default_slice(), min_voxel_size));
+    }
     let source = phantom_source(name).ok_or_else(|| format!("Phantom {name}.svg/png/toml not found"))?;
     let tissue_shapes = match &source {
         PhantomSource::Svg { svg, colormap } => load_shapes_svg(svg, colormap)?,
@@ -457,7 +505,7 @@ pub fn load(name: &str, min_voxel_size: f64) -> Result<Phantom, String> {
     hash = fnv1a(&min_voxel_size.to_le_bytes(), hash);
     hash = fnv1a(CACHE_VERSION.as_bytes(), hash);
     let (tissues, shapes) = tissue_shapes.into_iter().unzip();
-    Ok(Phantom { name: name.to_string(), tissues, shapes, support, center, matrix, k_axes, min_voxel_size, hash })
+    Ok(Phantom { name: name.to_string(), tissues, shapes, support, center, matrix, k_axes, min_voxel_size, hash, volume: None, slice: None })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -624,6 +672,50 @@ fn kspace_raster(mask: &Array2<u8>, origin: [f64; 2], pixel: [f64; 2], k_axes: &
         }
     });
     out
+}
+
+/// Exact k-space of density maps on a pixel grid centred at the origin, evaluated at the
+/// phantom k-axes k_p = (p − c)/(N·d) with c = (N−1)/2. With pixel centres y_m = (m − c)·d,
+/// Σ_m w_m e^{−2πi k_p y_m} is a DFT with pre- and post-twiddle factors, so an FFT gives the
+/// same result as the matrix products of `kspace_raster` in O(N² log N).
+pub fn kspace_from_density(maps: &[Vec<f32>], rows: usize, cols: usize, pixel: [f64; 2]) -> Vec<Array2<C64>> {
+    let twiddles = |n: usize, d: f64| -> (Vec<C64>, Vec<C64>) {
+        let c = (n as f64 - 1.0) / 2.0;
+        let pre: Vec<C64> = (0..n).map(|m| C64::from_polar(1.0, 2.0 * PI * c * m as f64 / n as f64)).collect();
+        let post: Vec<C64> = (0..n)
+            .map(|p| {
+                let k = (p as f64 - c) / (n as f64 * d);
+                C64::from_polar(d * crate::recon::sinc(k * d), 2.0 * PI * c * p as f64 / n as f64 - 2.0 * PI * c * c / n as f64)
+            })
+            .collect();
+        (pre, post)
+    };
+    let (pre0, post0) = twiddles(rows, pixel[0]);
+    let (pre1, post1) = twiddles(cols, pixel[1]);
+    maps.par_iter()
+        .map(|w| {
+            let mut a = Array2::from_vec(rows, cols, vec![C64::new(0.0, 0.0); rows * cols]);
+            for r in 0..rows {
+                for c in 0..cols {
+                    a.data[r * cols + c] = pre0[r] * pre1[c] * w[r * cols + c] as f64;
+                }
+            }
+            fft2_inplace(&mut a, false);
+            for r in 0..rows {
+                for c in 0..cols {
+                    a.data[r * cols + c] *= post0[r] * post1[c];
+                }
+            }
+            a
+        })
+        .collect()
+}
+
+fn kspace_volume_slice(ph: &Phantom, vol: &Volume, g: &SliceGeometry) -> PhantomKspace {
+    let [rows, cols] = ph.matrix;
+    let pixel = [ph.support[0] / rows as f64, ph.support[1] / cols as f64];
+    let maps = vol.slice_maps(g, rows, cols, pixel);
+    PhantomKspace { kspace: kspace_from_density(&maps, rows, cols, pixel) }
 }
 
 /// Multiply by e^{2πi k·offset} on the separable grid (`offset_FOV`)
@@ -796,6 +888,9 @@ pub struct Progress {
 
 /// Compute the phantom k-space (no cache)
 pub fn compute_kspace(ph: &Phantom, progress: Option<&Arc<Progress>>) -> PhantomKspace {
+    if let (Some(vol), Some(g)) = (&ph.volume, &ph.slice) {
+        return kspace_volume_slice(ph, vol, g);
+    }
     let jobs: Vec<(usize, &Shape)> = ph.shapes.iter().enumerate().flat_map(|(t, shapes)| shapes.iter().map(move |s| (t, s))).collect();
     if let Some(p) = progress {
         p.total.store(jobs.len(), Ordering::Relaxed);
@@ -844,6 +939,10 @@ pub fn compute_kspace(ph: &Phantom, progress: Option<&Arc<Progress>>) -> Phantom
 
 /// Phantom k-space from the disk cache, or computed (and cached)
 pub fn load_kspace(ph: &Phantom, progress: Option<&Arc<Progress>>) -> PhantomKspace {
+    if ph.is_volume_slice() {
+        // slices are fast to compute and too many to cache
+        return compute_kspace(ph, progress);
+    }
     if let Some(k) = read_cache(ph) {
         return k;
     }
@@ -853,7 +952,7 @@ pub fn load_kspace(ph: &Phantom, progress: Option<&Arc<Progress>>) -> PhantomKsp
 }
 
 pub fn is_cached(ph: &Phantom) -> bool {
-    cache_file(ph).is_some_and(|f| f.is_file())
+    ph.is_volume_slice() || cache_file(ph).is_some_and(|f| f.is_file())
 }
 
 #[cfg(test)]
@@ -917,6 +1016,25 @@ mod tests {
         let poly = kspace_polygon(&[[y0, x0], [y0, x1], [y1, x1], [y1, x0]], &a0, &a1);
         for (a, b) in raster.data.iter().zip(poly.data.iter()) {
             assert!((a - b).norm() < 1e-10 * (1.0 + b.norm()), "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn fft_density_transform_equals_matrix_transform() {
+        for (rows, cols) in [(9usize, 12usize), (10, 7)] {
+            let mut mask = Array2::<u8>::zeros(rows, cols);
+            for (i, v) in mask.data.iter_mut().enumerate() {
+                *v = u8::from((i * 7919) % 5 < 2);
+            }
+            let pixel = [0.7, 0.4];
+            let maps = vec![mask.data.iter().map(|&b| b as f32).collect::<Vec<f32>>()];
+            let k_axes = k_axes_for([rows, cols], [rows as f64 * pixel[0], cols as f64 * pixel[1]]);
+            let fft = &kspace_from_density(&maps, rows, cols, pixel)[0];
+            let origin = [-(rows as f64) / 2.0 * pixel[0], -(cols as f64) / 2.0 * pixel[1]];
+            let mat = kspace_raster(&mask, origin, pixel, &k_axes, [0.0, 0.0]);
+            for (a, b) in fft.data.iter().zip(mat.data.iter()) {
+                assert!((a - b).norm() < 1e-9 * (1.0 + b.norm()), "{a} vs {b}");
+            }
         }
     }
 

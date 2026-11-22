@@ -1,0 +1,6 @@
+# SpinSight 3D phantom: MNI ICBM152 2009c (see LICENSE-MNI.txt), built by tools/make_brain3d.py
+dims = [189, 220, 184]
+voxel_size = [1.0, 1.0, 1.0]
+origin = [-94.0, -125.0, -76.0]  # RAS mm of voxel (0, 0, 0)
+tile_columns = 14
+tissues = ["Gray matter", "White matter", "CSF", "Adipose tissue", "Muscle", "Cortical bone"]

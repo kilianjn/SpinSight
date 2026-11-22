@@ -3,8 +3,10 @@
 //! the left, viewing segments (image, k-space, pulse sequence) in the centre and the parameter
 //! card with its tabs and the acquisition status line at the bottom.
 
+mod exam_ui;
 mod maker;
 mod markdown;
+mod planning;
 pub mod plots;
 
 use std::collections::HashMap;
@@ -72,9 +74,21 @@ impl CardTab {
     /// most important parameters appear on the Routine tab as well as on their own tab.
     fn params(self) -> &'static [&'static str] {
         match self {
-            CardTab::Routine => {
-                &["sequence_type", "slice_thickness", "FOV_F", "FOV_P", "phase_oversampling", "TR", "TE", "TI", "FA", "NSA", "frequency_direction"]
-            }
+            CardTab::Routine => &[
+                "slice_orientation",
+                "num_slices",
+                "sequence_type",
+                "slice_thickness",
+                "FOV_F",
+                "FOV_P",
+                "phase_oversampling",
+                "TR",
+                "TE",
+                "TI",
+                "FA",
+                "NSA",
+                "frequency_direction",
+            ],
             CardTab::Contrast => &["TR", "TE", "TI", "FA", "FatSat", "echo_order"],
             CardTab::Resolution => &[
                 "matrix_F",
@@ -88,7 +102,22 @@ impl CardTab {
                 "partial_Fourier_factor",
                 "radial_sampling_factor",
             ],
-            CardTab::Geometry => &["frequency_direction", "FOV_F", "FOV_P", "phase_oversampling", "slice_thickness", "show_FOV"],
+            CardTab::Geometry => &[
+                "slice_orientation",
+                "slice_pos_LR",
+                "slice_pos_AP",
+                "slice_pos_HF",
+                "slice_angle_1",
+                "slice_angle_2",
+                "num_slices",
+                "slice_gap",
+                "slice_thickness",
+                "frequency_direction",
+                "FOV_F",
+                "FOV_P",
+                "phase_oversampling",
+                "show_FOV",
+            ],
             CardTab::Sequence => &["sequence_type", "trajectory", "pixel_bandwidth", "FOV_bandwidth", "FW_shift", "turbo_factor", "EPI_factor", "echo_order"],
             CardTab::Recon => &["image_mode", "homodyne", "do_apodize", "apodization_alpha", "do_zerofill"],
         }
@@ -114,6 +143,9 @@ pub struct SpinSightApp {
     show_kspace: bool,
     show_sequence: bool,
     show_browser: bool,
+    show_planning: bool,
+    planning: planning::Planning,
+    exam: exam_ui::ExamState,
     tab: CardTab,
     sliders_with_text: bool,
     text_buf: HashMap<&'static str, String>,
@@ -170,6 +202,9 @@ impl SpinSightApp {
             show_kspace: opts.show_kspace,
             show_sequence: opts.show_sequence,
             show_browser: true,
+            show_planning: true,
+            planning: planning::Planning::default(),
+            exam: exam_ui::ExamState::default(),
             tab: CardTab::Routine,
             sliders_with_text: opts.sliders_with_text,
             text_buf: HashMap::new(),
@@ -374,6 +409,7 @@ impl SpinSightApp {
         egui::Panel::left("browser").resizable(true).default_size(250.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(6.0);
+                self.exam_list(ui);
                 section_title(ui, "PROTOCOLS");
                 let current = self.ctrl.str("load_presets").to_string();
                 let presets: Vec<String> = self.ctrl.state("load_presets").options.iter().map(|o| o.label.clone()).filter(|p| p != CUSTOM_PRESET).collect();
@@ -586,7 +622,14 @@ impl SpinSightApp {
             crate::formatting::format_float(self.ctrl.inputs.slice_thickness, 2)
         );
         ui.horizontal_wrapped(|ui| {
+            self.scan_controls(ui);
             status_item(ui, "TA", &crate::formatting::ta(p.scantime), true);
+            if self.ctrl.phantom.is_volume_slice() {
+                status_item(ui, "Slices", &self.ctrl.inputs.num_slices.to_string(), false);
+            }
+            if p.concatenations > 1 {
+                status_item(ui, "Concat.", &p.concatenations.to_string(), false)
+            }
             status_item(ui, "Voxel", &voxel, false);
             status_item(ui, "Rel. SNR", &info.relative_snr, true);
             if ui.small_button("Set ref.").on_hover_text("Use the current SNR as reference (100 %)").clicked() {
@@ -614,6 +657,10 @@ impl SpinSightApp {
         // toolbar
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("View").color(Color32::GRAY));
+            let is_3d = self.ctrl.phantom.is_volume_slice();
+            if is_3d {
+                ui.toggle_value(&mut self.show_planning, "Planning").on_hover_text("Localizers (transversal, sagittal, coronal) with the planned slices");
+            }
             ui.toggle_value(&mut self.show_image, "Image");
             ui.toggle_value(&mut self.show_kspace, "k-space");
             ui.toggle_value(&mut self.show_sequence, "Sequence");
@@ -644,20 +691,52 @@ impl SpinSightApp {
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let n_img = usize::from(self.show_image) + usize::from(self.show_kspace);
-            if n_img > 0 {
+            let planning = self.ctrl.phantom.is_volume_slice() && self.show_planning;
+            if planning {
+                ui.horizontal(|ui| {
+                    if ui.button("Localizers → slice").on_hover_text("Show the centre of the displayed slice in the localizers").clicked() {
+                        let g = self.ctrl.inputs.displayed_slice_geometry();
+                        self.planning.center_on(&g);
+                    }
+                    ui.label(
+                        RichText::new("Drag the slices to move them, the ⟲ handle to angulate; click to navigate, wheel to scroll.")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                    self.param_widget(ui, "displayed_slice", changes);
+                });
+            }
+            let n_cells = n_img + if planning { 3 } else { 0 };
+            if n_cells > 0 {
                 let avail_w = ui.available_width();
                 let avail_h = ui.available_height();
                 let height_share = if self.show_sequence { 0.62 } else { 1.0 };
-                let size = ((avail_w - 30.0 * n_img as f32) / n_img as f32).min(avail_h * height_share - 50.0).clamp(MIN_IMAGE_SIZE, 760.0);
-                ui.horizontal_top(|ui| {
-                    if self.show_image {
+                let min = if planning { 220.0 } else { MIN_IMAGE_SIZE };
+                let size = ((avail_w - 22.0 * n_cells as f32) / n_cells as f32).min(avail_h * height_share - 60.0).clamp(min, 760.0);
+                ui.horizontal_wrapped(|ui| {
+                    if planning {
+                        if let Some(vol) = self.ctrl.phantom.volume.clone() {
+                            let fov = self.ctrl.protocol.fov;
+                            let inputs = self.ctrl.inputs.clone();
+                            let (series, highlight) = self.exam.review_geometries();
+                            let c = self.planning.show(ui, &vol, &inputs, fov, &series, highlight, size, self.show_help);
+                            changes.extend(c);
+                        }
+                    }
+                    if self.show_image && self.exam.reviewed().is_some() {
+                        ui.vertical(|ui| self.review_image(ui, size, reset));
+                    } else if self.show_image {
                         ui.vertical(|ui| {
                             let fov = self.result.as_ref().map(|r| r.output.fov).unwrap_or(self.ctrl.protocol.fov);
                             let fov_box = self.ctrl.inputs.show_fov.then(|| plots::fov_box(&self.ctrl.protocol));
                             if self.result.is_none() {
                                 placeholder(ui, "Preparing image", size);
                             } else {
-                                plots::image_plot(ui, self.image_tex.as_ref().map(|t| &t.0), fov, fov_box.as_ref(), size, reset);
+                                let letters = self.ctrl.phantom.slice.map(|g| crate::geometry::edge_letters(g.u, g.v));
+                                if planning {
+                                    ui.label(RichText::new("MR image").strong());
+                                }
+                                plots::image_plot(ui, self.image_tex.as_ref().map(|t| &t.0), fov, fov_box.as_ref(), letters.as_ref(), size, reset);
                             }
                         });
                     }
@@ -880,9 +959,16 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
             Widget::FloatSlider => {
                 let (lo, hi) = st.spec.bounds.unwrap_or((0.0, 1.0));
                 let mut v = st.value.num();
+                let shown = match name {
+                    "slice_pos_LR" => format!("{} mm", crate::geometry::position_label(0, v)),
+                    "slice_pos_AP" => format!("{} mm", crate::geometry::position_label(1, v)),
+                    "slice_pos_HF" => format!("{} mm", crate::geometry::position_label(2, v)),
+                    "slice_angle_1" | "slice_angle_2" => format!("{v:.0}°"),
+                    _ => format!("{v:.2}"),
+                };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}:", st.label)).color(Color32::GRAY));
-                    ui.label(RichText::new(format!("{v:.2}")).strong());
+                    ui.label(RichText::new(format!("{}:", st.label.trim_end_matches(" [°]"))).color(Color32::GRAY));
+                    ui.label(RichText::new(shown).strong());
                 });
                 ui.spacing_mut().slider_width = width - 20.0;
                 let r = ui.add(egui::Slider::new(&mut v, lo..=hi).step_by(st.spec.step).show_value(false));
@@ -940,6 +1026,7 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
 
 impl eframe::App for SpinSightApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.poll_scan();
         if let Some(r) = self.worker.poll() {
             if r.id >= self.result.as_ref().map_or(0, |x| x.id) {
                 self.result = Some(r);
@@ -959,6 +1046,7 @@ impl eframe::App for SpinSightApp {
             self.viewer(ui, &mut changes);
         });
         self.dialogs(&ctx);
+        self.exam_dialogs(&ctx);
         if self.spans.te != prev_spans.te || self.spans.tr != prev_spans.tr || self.spans.ti != prev_spans.ti {
             ctx.request_repaint();
         }

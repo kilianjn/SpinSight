@@ -98,7 +98,9 @@ pub fn fov_box(p: &Protocol) -> FovBox {
 }
 
 /// MR image plot; `fov` = [height, width] in mm
-pub fn image_plot(ui: &mut Ui, tex: Option<&TextureHandle>, fov: [f64; 2], fov_box: Option<&FovBox>, size: f32, reset: bool) {
+/// `letters`: patient orientation at the (top, bottom, left, right) image edges (3D phantoms)
+#[allow(clippy::too_many_arguments)]
+pub fn image_plot(ui: &mut Ui, tex: Option<&TextureHandle>, fov: [f64; 2], fov_box: Option<&FovBox>, letters: Option<&[String; 4]>, size: f32, reset: bool) {
     let annotation = annotation_color(ui);
     let mut plot = Plot::new("image_plot")
         .show_x(false)
@@ -136,6 +138,15 @@ pub fn image_plot(ui: &mut Ui, tex: Option<&TextureHandle>, fov: [f64; 2], fov_b
                 plot_ui.line(Line::new("acquired FOV", PlotPoints::from(pts)).color(LIGHTBLUE).width(3.0));
             }
             plot_ui.line(Line::new("reconstructed FOV", PlotPoints::from(rect_line(b.reconstructed[1], b.reconstructed[0]))).color(annotation).width(3.0));
+        }
+        if let Some(l) = letters {
+            let (h, w) = (fov[0] / 2.0, fov[1] / 2.0);
+            let col = Color32::from_gray(210);
+            let txt = |s: &str| egui::RichText::new(s).size(15.0).color(col).strong();
+            plot_ui.text(Text::new("top", PlotPoint::new(0.0, h), txt(&l[0])).anchor(Align2::CENTER_TOP));
+            plot_ui.text(Text::new("bottom", PlotPoint::new(0.0, -h), txt(&l[1])).anchor(Align2::CENTER_BOTTOM));
+            plot_ui.text(Text::new("left", PlotPoint::new(-w, 0.0), txt(&l[2])).anchor(Align2::LEFT_CENTER));
+            plot_ui.text(Text::new("right", PlotPoint::new(w, 0.0), txt(&l[3])).anchor(Align2::RIGHT_CENTER));
         }
     });
 }

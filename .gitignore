@@ -35,3 +35,5 @@ settings.toml
 !.github/**
 !assets/icon/*.png
 !docs/*.png
+
+!assets/volumes/*.png

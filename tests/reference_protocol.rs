@@ -145,7 +145,8 @@ fn option_lists_match_python() {
     }
     for (name, d) in reference["defaults"].as_object().unwrap() {
         let Some(p) = params::try_param(name) else { continue };
-        if d.is_null() || name == "load_presets" {
+        // the default phantom of the desktop version is the 3D brain (Python: 2D brain)
+        if d.is_null() || name == "load_presets" || name == "object" {
             continue;
         }
         let ours = &p.default;
@@ -167,7 +168,8 @@ fn protocols_match_python() {
     let reference = load("protocols.json");
     let mut all_failures = Vec::new();
     for (config, r) in reference.as_object().unwrap() {
-        let mut inp = Inputs::default();
+        // the Python default phantom
+        let mut inp = Inputs { object: "brain".into(), ..Default::default() };
         for (k, v) in r["inputs"].as_object().unwrap() {
             inp.set(k, &json_to_value(v)).unwrap();
         }

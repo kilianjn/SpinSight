@@ -11,6 +11,7 @@ use crate::params::{self, snap, Opt, ParamSpec, SnapMode, Value, Widget};
 use crate::phantom::{self, Phantom};
 use crate::presets;
 use crate::protocol::{self, pyround, Inputs, MinMax, Protocol, INPUT_NAMES};
+use crate::volume;
 
 /// Dynamic state of one parameter widget
 #[derive(Debug, Clone)]
@@ -214,6 +215,15 @@ impl Controller {
             "do_zerofill" => b(i.do_zerofill),
             "shot" => n(p.shot as f64),
             "signal_exponent" => n(i.signal_exponent),
+            "slice_orientation" => s(&i.slice_orientation),
+            "slice_angle_1" => n(i.slice_angle_1),
+            "slice_angle_2" => n(i.slice_angle_2),
+            "slice_pos_LR" => n(i.slice_pos[0]),
+            "slice_pos_AP" => n(i.slice_pos[1]),
+            "slice_pos_HF" => n(i.slice_pos[2]),
+            "num_slices" => n(i.num_slices as f64),
+            "slice_gap" => n(i.slice_gap),
+            "displayed_slice" => n(i.displayed_slice.min(i.num_slices.max(1) - 1) as f64),
             _ => None,
         }
     }
@@ -234,6 +244,7 @@ impl Controller {
             "TE" => Some(p.te_bounds),
             "pixel_bandwidth" => Some(p.pixel_bandwidth_bounds),
             "slice_thickness" => Some(p.slice_thickness_bounds),
+            "displayed_slice" => Some(MinMax::new(0.0, (self.inputs.num_slices.max(1) - 1) as f64)),
             _ => None,
         }
     }
@@ -346,6 +357,12 @@ impl Controller {
                 set(&mut inputs, &format!("recon_matrix_{dir}"), Value::Num(pyround(m.num() * ratio)));
             }
         }
+        // a new number of slices shows the middle slice of the stack
+        if let Some(n) = get(&inputs, "num_slices") {
+            if !has(&inputs, "displayed_slice") {
+                set(&mut inputs, "displayed_slice", Value::Num(((n.num().max(1.0) - 1.0) / 2.0).floor()));
+            }
+        }
         if get(&inputs, "echo_order").is_some_and(|v| v.str() == "Centric") && !has(&inputs, "TE") {
             set(&mut inputs, "TE", Value::s("min"));
         }
@@ -359,7 +376,14 @@ impl Controller {
                 self.messages.push(e);
             }
         }
-        if self.phantom.name != self.inputs.object || self.phantom.min_voxel_size != self.inputs.min_voxel_size {
+        self.inputs.displayed_slice = self.inputs.displayed_slice.min(self.inputs.num_slices.max(1) - 1);
+        if let Some(vol) = volume::builtin(&self.inputs.object) {
+            // slice through the 3D phantom at the planned position
+            let geom = self.inputs.displayed_slice_geometry();
+            if self.phantom.slice != Some(geom) || self.phantom.name != self.inputs.object || self.phantom.min_voxel_size != self.inputs.min_voxel_size {
+                self.phantom = Arc::new(phantom::slice_phantom(&vol, geom, self.inputs.min_voxel_size));
+            }
+        } else if self.phantom.name != self.inputs.object || self.phantom.min_voxel_size != self.inputs.min_voxel_size {
             match phantom::load(&self.inputs.object, self.inputs.min_voxel_size) {
                 Ok(ph) => self.phantom = Arc::new(ph),
                 Err(e) => {
@@ -378,6 +402,25 @@ impl Controller {
         let valid: Vec<(String, Value)> = settings.into_iter().filter(|(k, _)| INPUT_NAMES.contains(&k.as_str()) || k.starts_with("constant_")).collect();
         self.update_inputs(&valid);
         self.sync_with_graph();
+    }
+
+    /// Restore the parameters of an earlier acquisition (`preset`: the preset it was based on)
+    pub fn restore_settings(&mut self, preset: &str, settings: Vec<(String, Value)>) {
+        match presets::preset(preset).filter(|_| preset != params::CUSTOM_PRESET) {
+            Some(p) => {
+                self.loaded_preset_name = preset.to_string();
+                self.apply_settings(p, true);
+            }
+            None => self.forget_preset(),
+        }
+        let preset_settings = std::mem::take(&mut self.loaded_preset);
+        self.apply_settings(settings, false);
+        self.loaded_preset = preset_settings;
+        if self.loaded_preset.is_empty() {
+            self.forget_preset();
+        } else {
+            self.update_preset_label();
+        }
     }
 
     pub fn forget_preset(&mut self) {
@@ -527,8 +570,32 @@ impl Controller {
         self.state_mut("reference_tissue").options = tissue_opts;
         self.update_x_y_labels();
         self.update_shot_label();
+        self.update_slice_labels();
         let te_label = if self.protocol.num_segm == 1 { "TE" } else { "TE (effective)" };
         self.state_mut("TE").label = te_label.into();
+    }
+
+    /// Labels depending on the slice orientation of 3D phantoms
+    fn update_slice_labels(&mut self) {
+        use crate::geometry::Orientation;
+        let o = Orientation::from_name(&self.inputs.slice_orientation);
+        let (t1, t2) = o.tilt_targets();
+        let l1 = format!("Angulation {}>{} [°]", o.short(), t1.short());
+        let l2 = format!("Angulation {}>{} [°]", o.short(), t2.short());
+        self.state_mut("slice_angle_1").label = l1;
+        self.state_mut("slice_angle_2").label = l2;
+        // frequency direction: the stored values mean "vertical" / "horizontal" in the image
+        let (vertical, horizontal) = if !self.phantom.is_volume_slice() {
+            ("anterior-posterior", "left-right")
+        } else {
+            match o {
+                Orientation::Transversal => ("anterior-posterior", "left-right"),
+                Orientation::Sagittal => ("head-feet", "anterior-posterior"),
+                Orientation::Coronal => ("head-feet", "left-right"),
+            }
+        };
+        self.state_mut("frequency_direction").options =
+            vec![Opt { label: vertical.into(), value: Value::s("anterior-posterior") }, Opt { label: horizontal.into(), value: Value::s("left-right") }];
     }
 
     fn update_x_y_labels(&mut self) {
@@ -613,6 +680,11 @@ impl Controller {
         let zfp = self.zerofill_possible();
         self.set_visibility("do_zerofill", zfp);
         self.info.spoke_angle_visible = p.is_radial;
+        let is_3d = self.phantom.is_volume_slice();
+        for name in ["slice_orientation", "slice_angle_1", "slice_angle_2", "slice_pos_LR", "slice_pos_AP", "slice_pos_HF", "num_slices", "slice_gap"] {
+            self.set_visibility(name, is_3d);
+        }
+        self.set_visibility("displayed_slice", is_3d && self.inputs.num_slices > 1);
     }
 
     fn update_info_params(&mut self) {
@@ -705,5 +777,24 @@ mod tests {
         d.apply_settings(presets::parse_settings(&text).unwrap(), false);
         assert_eq!(d.num("FA"), 30.0);
         assert_eq!(d.str("sequence_type"), "Spoiled Gradient Echo");
+    }
+
+    #[test]
+    fn restore_settings_keeps_preset_and_slice_position() {
+        let mut c = Controller::new().unwrap();
+        c.on_change("load_presets", Value::s("T2w-TSE"));
+        c.on_change("slice_orientation", Value::s("Sagittal"));
+        c.on_change("slice_pos_LR", Value::Num(12.5));
+        c.on_change("num_slices", Value::Num(9.0));
+        let saved: Vec<(String, Value)> = c.settings().into_iter().map(|(k, v, _)| (k, v)).collect();
+        let preset = c.loaded_preset_name.clone();
+        let mut d = Controller::new().unwrap();
+        d.on_change("load_presets", Value::s("T1w-GRE"));
+        d.restore_settings(&preset, saved);
+        assert_eq!(d.str("load_presets"), "T2w-TSE");
+        assert_eq!(d.str("slice_orientation"), "Sagittal");
+        assert_eq!(d.num("slice_pos_LR"), 12.5);
+        assert_eq!(d.inputs.num_slices, 9);
+        assert_eq!(d.num("TR"), c.num("TR"));
     }
 }
