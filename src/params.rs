@@ -343,6 +343,9 @@ fn build(phantom_names: &[String], preset_names: &[String]) -> Vec<ParamSpec> {
         number("noise_gain", "Scaling factor for noise standard deviation", None, 0.0, 3.0, -1, None),
         spec("noise_type", "Noise type", Select, Some(str_options(NOISE_TYPES)), Value::s(NOISE_TYPES[0]), -1, None, false),
         number("interference_level", "Strength of spikes / RF interference", Some((0.0, 4.0)), 0.05, 1.0, -1, None),
+        boolean("b0_inhomogeneity", "Simulate B0 inhomogeneities", false, -1, None),
+        number("b0_strength", "Strength of the B0 inhomogeneity", Some((0.0, 3.0)), 0.05, 1.0, -1, None),
+        boolean("b0_shim", "Second-order shim", true, -1, None),
         spec(
             "sequence_type",
             "Pulse sequence",

@@ -7,6 +7,7 @@
 #![allow(clippy::needless_range_loop, clippy::manual_is_multiple_of)]
 
 pub mod array;
+pub mod b0;
 pub mod constants;
 pub mod controller;
 pub mod convert;

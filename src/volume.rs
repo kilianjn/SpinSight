@@ -145,6 +145,20 @@ impl Volume {
         });
     }
 
+    /// Fraction of tissue `tissue` in voxel `index` (x fastest, then y, then z)
+    #[inline]
+    pub fn voxel_fraction(&self, index: usize, tissue: usize) -> f32 {
+        let [la, lb, fa, fb] = self.data[index];
+        let mut f = 0.0;
+        if la as usize == tissue {
+            f += fa as f32;
+        }
+        if lb as usize == tissue {
+            f += fb as f32;
+        }
+        f / 255.0
+    }
+
     /// Fraction of tissue (vs. air) at world point p
     #[inline]
     pub fn tissue_fraction(&self, p: V3) -> f32 {

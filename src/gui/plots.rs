@@ -55,6 +55,37 @@ pub fn gray_texture(ctx: &egui::Context, name: &str, a: &Array2<f64>) -> Option<
     Some(ctx.load_texture(name, img, TextureOptions::NEAREST))
 }
 
+/// Field map texture in a diverging colour scale (blue: below, grey: on, red: above resonance,
+/// black: no value); returns the texture and the scale (99th percentile of |value|)
+pub fn field_texture(ctx: &egui::Context, name: &str, a: &Array2<f64>) -> Option<(TextureHandle, f64)> {
+    if a.rows == 0 || a.cols == 0 {
+        return None;
+    }
+    let mut v: Vec<f64> = a.data.iter().map(|x| x.abs()).filter(|x| x.is_finite()).collect();
+    v.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    let scale = v.get(((v.len() as f64 - 1.0) * 0.99) as usize).copied().unwrap_or(1.0).max(1.0);
+    let pixels: Vec<egui::Color32> = a
+        .data
+        .iter()
+        .map(|&x| {
+            if !x.is_finite() {
+                return egui::Color32::BLACK;
+            }
+            let t = (x / scale).clamp(-1.0, 1.0) as f32;
+            let grey = 120.0;
+            let a = t.abs();
+            let (r, g, b) = if t >= 0.0 {
+                (grey + (255.0 - grey) * a, grey * (1.0 - a), grey * (1.0 - a))
+            } else {
+                (grey * (1.0 - a), grey * (1.0 - 0.4 * a), grey + (255.0 - grey) * a)
+            };
+            egui::Color32::from_rgb(r as u8, g as u8, b as u8)
+        })
+        .collect();
+    let img = egui::ColorImage { size: [a.cols, a.rows], pixels, source_size: egui::Vec2::new(a.cols as f32, a.rows as f32) };
+    Some((ctx.load_texture(name, img, TextureOptions::LINEAR), scale))
+}
+
 /// Swallow mouse-wheel input so that the surrounding scroll area does not scroll as well
 fn take_scroll(ctx: &egui::Context) -> f32 {
     ctx.input_mut(|i| {

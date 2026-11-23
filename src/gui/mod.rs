@@ -158,6 +158,8 @@ pub struct SpinSightApp {
     conflict_hold: Option<&'static str>,
     conflict_accepted: Option<&'static str>,
     confirm_reset: bool,
+    show_field_map: bool,
+    field_tex: Option<(TextureHandle, f64, u64)>,
     tab: CardTab,
     sliders_with_text: bool,
     text_buf: HashMap<&'static str, String>,
@@ -228,6 +230,8 @@ impl SpinSightApp {
             conflict_hold: None,
             conflict_accepted: None,
             confirm_reset: false,
+            show_field_map: false,
+            field_tex: None,
             tab: CardTab::Routine,
             sliders_with_text: opts.sliders_with_text,
             text_buf: HashMap::new(),
@@ -666,6 +670,8 @@ impl SpinSightApp {
 
                 ui.add_space(10.0);
                 self.noise_menu(ui, changes);
+                ui.add_space(10.0);
+                self.b0_menu(ui, changes);
 
                 ui.add_space(10.0);
                 section_title(ui, "OPTIONS");
@@ -735,6 +741,49 @@ impl SpinSightApp {
                 changes.push(("interference_level", Value::Num(1.0)));
             }
         });
+    }
+
+    /// B0 inhomogeneity section of the browser
+    fn b0_menu(&mut self, ui: &mut Ui, changes: &mut Vec<(&'static str, Value)>) {
+        section_title(ui, "B₀ FIELD");
+        let help = self.show_help;
+        let tip = |r: egui::Response, name: &str| {
+            if help {
+                if let Some(t) = tooltips::tooltip(name) {
+                    r.on_hover_ui(|ui| markdown::show(ui, t, 380.0));
+                }
+            }
+        };
+        let mut on = self.ctrl.inputs.b0_inhomogeneity;
+        let r = ui.checkbox(&mut on, "Simulate B0 inhomogeneities");
+        if r.changed() {
+            changes.push(("b0_inhomogeneity", Value::Bool(on)));
+        }
+        tip(r, "b0_inhomogeneity");
+        if !on {
+            return;
+        }
+        ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
+        let mut strength = self.ctrl.inputs.b0_strength * 100.0;
+        ui.label(RichText::new("Strength").color(Color32::GRAY));
+        let r = ui.add(egui::Slider::new(&mut strength, 0.0..=300.0).step_by(5.0).suffix(" %"));
+        if r.changed() {
+            changes.push(("b0_strength", Value::Num(strength / 100.0)));
+        }
+        tip(r, "b0_strength");
+        let mut shim = self.ctrl.inputs.b0_shim;
+        let r = ui.checkbox(&mut shim, "Shimmed (2nd order)");
+        if r.changed() {
+            changes.push(("b0_shim", Value::Bool(shim)));
+        }
+        tip(r, "b0_shim");
+        ui.checkbox(&mut self.show_field_map, "Show field map").on_hover_text("Show the off-resonance [Hz] instead of the MR image");
+        let source = if self.ctrl.phantom.is_volume_slice() {
+            "Field of the air in the paranasal sinuses, mastoid cells and ear canals"
+        } else {
+            "Generic field (air cavity in front of the object)"
+        };
+        ui.label(RichText::new(source).small().color(Color32::GRAY));
     }
 
     fn open_protocol(&mut self) {
@@ -955,7 +1004,23 @@ impl SpinSightApp {
                             changes.extend(c);
                         }
                     }
-                    if self.show_image && self.exam.reviewed().is_some() {
+                    let field_map = self.result.as_ref().and_then(|r| r.output.field_map.as_ref().map(|m| (r.id, m.clone())));
+                    let field_map = field_map.filter(|_| self.show_image && self.exam.reviewed().is_none() && self.show_field_map);
+                    if let Some((id, map)) = field_map {
+                        if self.field_tex.as_ref().is_none_or(|t| t.2 != id) {
+                            self.field_tex = plots::field_texture(&ctx, "field_map", &map).map(|(t, s)| (t, s, id));
+                        }
+                        ui.vertical(|ui| {
+                            let (lo, hi) =
+                                map.data.iter().filter(|v| v.is_finite()).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+                            let scale = self.field_tex.as_ref().map_or(0.0, |t| t.1);
+                            ui.label(RichText::new(format!("B₀ field map {lo:.0} … {hi:.0} Hz")).strong())
+                                .on_hover_text(format!("Off-resonance in the slice: blue below, grey on, red above resonance; full colour at ±{scale:.0} Hz"));
+                            let fov = self.result.as_ref().map(|r| r.output.fov).unwrap_or(self.ctrl.protocol.fov);
+                            let letters = self.ctrl.phantom.slice.map(|g| crate::geometry::edge_letters(g.u, g.v));
+                            plots::image_plot(ui, self.field_tex.as_ref().map(|t| &t.0), fov, None, letters.as_ref(), size, reset);
+                        });
+                    } else if self.show_image && self.exam.reviewed().is_some() {
                         ui.vertical(|ui| self.review_image(ui, size, reset));
                     } else if self.show_image {
                         ui.vertical(|ui| {

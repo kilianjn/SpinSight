@@ -46,6 +46,14 @@ The *NOISE* section of the browser sets the kind and strength of the noise:
 * **Thermal noise level** (0–400 % of the standard; 0 % is noise-free) – the relative SNR changes accordingly – and the **strength** of spikes / RF interference.
 * **New realisation** draws new random noise, spike positions and interference frequency; **Standard** returns to thermal noise at 100 %.
 
+### B0 inhomogeneity
+The *B₀ FIELD* section below it switches on the simulation of **B0 inhomogeneities** (off by default):
+* **Field**: for the 3D brain, the off-resonance is computed from the magnetic susceptibility of the air in the paranasal sinuses, mastoid cells and ear canals (found in the volume; Δχ = 9.4 ppm relative to tissue), as the dipole field with B0 along the head–feet axis of a cylindrical bore. The second-order **shim** (on by default) removes the smooth part of the field over the brain, as the scanner's automatic shim does; without it, the field also varies smoothly over the whole head. 2D phantoms get a generic field. The **strength** (0–300 %) scales the susceptibility; the field scales with B0 (3 T doubles it). **Show field map** displays the off-resonance [Hz] of the slice instead of the MR image.
+* **Effects** (simulated from the timing of every k-space sample): geometric distortion along the frequency encoding direction and, much stronger, along the phase encoding direction in EPI; signal loss in gradient echoes from dephasing within the voxels and across the slice, growing with TE and B0 (spin echoes refocus it at the echo); failure of the frequency-selective fat saturation near the air cavities (and saturation of shifted water); ghosting in segmented EPI.
+* **Method**: the phase until the echo time is applied to the tissue images exactly; the phase evolution during the readouts is described by off-resonance frequency bins with least-squares (time-segmentation) interpolators; voxels whose local echo is shifted out of the sampled k-space by the field gradient lose their signal. With the B0 simulation on, a new image takes about 0.1–0.6 s instead of 0.02–0.1 s.
+
+![](docs/b0.png)
+
 ### 3D brain phantom: slice planning and examinations
 The default phantom, **brain 3D**, is a complete head volume (1 mm voxels, 189 × 220 × 184 mm): gray matter, white matter and CSF of the brain, and fat, muscle and bone/air of the head around it. It is derived from the MNI ICBM 152 2009c template (see [License](#license)); [tools/make_brain3d.py](./tools/make_brain3d.py) rebuilds it from the template files. Every slice is computed from the volume with its real thickness (partial volume of tissues over the slice profile), at any position and angulation.
 
@@ -138,6 +146,7 @@ The release workflow ([.github/workflows/release.yml](./.github/workflows/releas
 | `src/imaging.rs` | `nodes/kspace_simulation.py`, `kspace_processing.py`, `image_reconstruction.py` | k-space sampling, contrast, noise, homodyne, apodization, zero filling, reconstruction |
 | `src/phantom.rs`, `src/svg.rs` | `phantom.py` | phantom shapes (incl. label images) and analytic k-space |
 | `src/volume.rs`, `src/geometry.rs` | – | 3D phantom (sampling, slices with thickness), slice geometry (orientation, angulation, stack) |
+| `src/b0.rs` | – | B0 field of air cavities (susceptibility, dipole FFT, shim), off-resonance bins for the simulation |
 | `src/exam.rs` | – | multi-slice acquisition of the planned stack into series |
 | `src/phantom_maker.rs` | – | segmentation, drawn shapes, phantom import |
 | `src/nufft.rs`, `src/voronoi.rs` | `recon.py` (finufft / mri-nufft) | non-Cartesian gridding |

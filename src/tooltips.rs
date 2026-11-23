@@ -348,6 +348,28 @@ Standard deviation of the thermal noise relative to the standard level (100 %). 
         r#"# Spike / RF interference strength
 Amplitude of the spikes or of the RF interference relative to the standard (100 %). *New realisation* draws new spike positions or a new interference frequency."#,
     ),
+    (
+        "b0_inhomogeneity",
+        r#"# B0 inhomogeneity
+Simulates deviations of the main magnetic field B0 caused by differences in magnetic susceptibility, mainly at interfaces between tissue and air. For the 3D brain, the field is computed from the air in the paranasal sinuses, mastoid cells and ear canals (dipole field, B0 along the head–feet axis); 2D phantoms get a generic field.
+
+Off-resonant spins precess at a different frequency. This causes:
+* *geometric distortion* along the frequency encoding direction (and, much stronger, along the phase encoding direction in EPI), larger with lower bandwidth,
+* *signal loss* in gradient echoes from dephasing within the voxel and across the slice, growing with TE and field strength (spin echoes refocus it at the echo),
+* *failure of the frequency-selective fat saturation* where fat is shifted out of the saturation band (and saturation of water shifted into it).
+
+The effects scale with the field strength (B0 = 3 T doubles the off-resonance)."#,
+    ),
+    (
+        "b0_strength",
+        r#"# Strength of the B0 inhomogeneity
+Scales the susceptibility differences (100 %: air – tissue, 9.4 ppm)."#,
+    ),
+    (
+        "b0_shim",
+        r#"# Shim
+Scanners correct the smooth part of the field inhomogeneity with shim coils (here: a second-order fit over the brain, as automatic shimming does). The local fields near air cavities remain. Without shim, the field varies over the whole head."#,
+    ),
 ];
 
 pub fn tooltip(name: &str) -> Option<&'static str> {

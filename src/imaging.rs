@@ -41,6 +41,8 @@ pub struct SimOutput {
     pub measured_shape: [usize; 3],
     /// time after excitation per (i, j) sample position
     pub tae: Vec<f64>,
+    /// off-resonance of the simulated B0 inhomogeneity [Hz] on the image grid (if simulated)
+    pub field_map: Option<Array2<f64>>,
     pub timings: Vec<(&'static str, f64)>,
 }
 
@@ -116,6 +118,9 @@ pub fn simulation_key(inp: &Inputs) -> Inputs {
     }
 }
 
+/// Resampled phantom k-space per tissue (flattened sample positions)
+type Comps = Arc<Vec<Vec<C64>>>;
+
 struct CompsCache {
     key: u64,
     /// per tissue, flattened (n0, n1, na)
@@ -137,6 +142,9 @@ pub struct Simulator {
     rng: Rng,
     seed: u64,
     noise_generation: u64,
+    /// phantom k-space split by off-resonance (B0 inhomogeneity) and its resampled bins
+    b0: Option<(u64, Arc<crate::b0::Binned>)>,
+    b0_comps: Option<(u64, Vec<Comps>)>,
 }
 
 impl Default for Simulator {
@@ -224,6 +232,12 @@ fn add_interference(measured: &mut [C64], p: &Protocol, shape: [usize; 2], na: u
     }
 }
 
+/// Memory for the resampled off-resonance bins of the B0 simulation [bytes]
+const B0_MEMORY: usize = 256 << 20;
+
+/// Half width (at half maximum) of the frequency-selective fat saturation band [ppm]
+const FATSAT_HALF_WIDTH: f64 = 1.2;
+
 /// Spike amplitude relative to the k-space maximum at interference level 1
 const SPIKE_AMPLITUDE: f64 = 0.4;
 /// RF interference amplitude (relative to the k-space maximum, scaled with the number of samples)
@@ -286,7 +300,7 @@ fn make_gridder(k: &[[f64; 2]], fov: [f64; 2], with_density: bool) -> (Nufft2d, 
 impl Simulator {
     /// Simulator with its own noise sequence (e.g. one per acquired series)
     pub fn with_seed(seed: u64) -> Self {
-        Simulator { comps: None, gridder: None, noise: None, rng: Rng::new(seed), seed, noise_generation: 0 }
+        Simulator { comps: None, gridder: None, noise: None, rng: Rng::new(seed), seed, noise_generation: 0, b0: None, b0_comps: None }
     }
 
     /// Draw a new noise realisation on the next run
@@ -312,9 +326,22 @@ impl Simulator {
     }
 
     /// Phantom k-space resampled at the sample positions, per tissue (`kspace_comps`)
-    fn kspace_comps(&mut self, p: &Protocol, ph: &Phantom, pk: &PhantomKspace, axes: &[Vec<f64>; 2], grid_axes: &[Vec<f64>; 2]) -> Arc<Vec<Vec<C64>>> {
+    /// `kspace`: phantom k-space arrays (per tissue, or per tissue and off-resonance bin);
+    /// `variant` distinguishes different sets for the same phantom
+    #[allow(clippy::too_many_arguments)]
+    fn kspace_comps(
+        &mut self,
+        p: &Protocol,
+        ph: &Phantom,
+        kspace: &[Array2<C64>],
+        phantom_axes: &[Vec<f64>; 2],
+        variant: u64,
+        axes: &[Vec<f64>; 2],
+        grid_axes: &[Vec<f64>; 2],
+    ) -> Arc<Vec<Vec<C64>>> {
         let mut h = DefaultHasher::new();
         ph.hash.hash(&mut h);
+        variant.hash(&mut h);
         p.is_radial.hash(&mut h);
         hash_f64s(&mut h, &axes[0]);
         hash_f64s(&mut h, &axes[1]);
@@ -327,15 +354,30 @@ impl Simulator {
                 return c.comps.clone();
             }
         }
-        let comps: Vec<Vec<C64>> = if !p.is_radial {
-            let k0 = sinc_kernel(&grid_axes[0], &ph.k_axes[0], ph.support[0]);
-            let k1 = sinc_kernel(&grid_axes[1], &ph.k_axes[1], ph.support[1]);
-            pk.kspace.par_iter().map(|ksp| sinc_interpolate(ksp, &k0, &k1).data).collect()
+        let comps = Arc::new(resample_kspace(p, ph, kspace, phantom_axes, axes, grid_axes));
+        self.comps = Some(CompsCache { key, comps: comps.clone() });
+        comps
+    }
+}
+
+/// Phantom k-space arrays resampled at the sample positions
+fn resample_kspace(
+    p: &Protocol,
+    ph: &Phantom,
+    kspace: &[Array2<C64>],
+    phantom_axes: &[Vec<f64>; 2],
+    axes: &[Vec<f64>; 2],
+    grid_axes: &[Vec<f64>; 2],
+) -> Vec<Vec<C64>> {
+    {
+        if !p.is_radial {
+            let k0 = sinc_kernel(&grid_axes[0], &phantom_axes[0], ph.support[0]);
+            let k1 = sinc_kernel(&grid_axes[1], &phantom_axes[1], ph.support[1]);
+            kspace.par_iter().map(|ksp| sinc_interpolate(ksp, &k0, &k1).data).collect()
         } else {
             let k = k_samples(axes, &p.k_angles);
             let (op, _, shape) = make_gridder(&k, ph.support, false);
-            let images: Vec<Array2<C64>> = pk
-                .kspace
+            let images: Vec<Array2<C64>> = kspace
                 .par_iter()
                 .map(|g| {
                     let sample_shifts = [0, 1].map(|d| if g.shape()[d] % 2 == 1 { 0.0 } else { 0.5 });
@@ -344,12 +386,11 @@ impl Simulator {
                 .collect();
             let refs: Vec<&Array2<C64>> = images.iter().collect();
             op.forward_batch(&refs)
-        };
-        let comps = Arc::new(comps);
-        self.comps = Some(CompsCache { key, comps: comps.clone() });
-        comps
+        }
     }
+}
 
+impl Simulator {
     /// Run the simulation and reconstruction
     pub fn run(&mut self, p: &Protocol, inp: &Inputs, ph: &Phantom, pk: &PhantomKspace) -> SimOutput {
         let mut timings = Vec::new();
@@ -358,14 +399,99 @@ impl Simulator {
         let grid_axes = k_grid_axes(p, ph);
         let [n0, n1] = [axes[0].len(), axes[1].len()];
         let na = p.k_angles.len();
-        let comps = self.kspace_comps(p, ph, pk, &axes, &grid_axes);
+        let n_read = p.k_read_axis.len();
+        // time after excitation and time from the (spin) echo of k-space position (i, j)
+        let times = |ij: usize| -> (f64, f64) {
+            let (i, j) = (ij / n1, ij % n1);
+            let (i_read, i_pe) = if p.freq_dir == 0 { (i, j) } else { (j, i) };
+            let (rf, gr) = p.pe_echo[i_pe];
+            let ro = &p.readouts[rf][gr];
+            let st = if ro.area < 0.0 { p.sampling_time[n_read - 1 - i_read] } else { p.sampling_time[i_read] };
+            let tae = ro.center + st;
+            (tae, if p.is_gradient_echo { tae } else { tae - p.spin_echoes[i_pe] })
+        };
+        // B0 inhomogeneity: phantom k-space split by off-resonance frequency
+        let b0 = inp.b0_inhomogeneity && inp.b0_strength > 0.0;
+        let binned = if b0 {
+            let t_rel: Vec<f64> = (0..n0 * n1).into_par_iter().map(|ij| times(ij).1).collect();
+            let nearest0 = |ax: &[f64]| (0..ax.len()).min_by(|&a, &b| ax[a].abs().partial_cmp(&ax[b].abs()).unwrap()).unwrap_or(0);
+            let t_center = (t_rel[nearest0(&axes[0]) * n1 + nearest0(&axes[1])] * 10.0).round() / 10.0;
+            let t_span = (t_rel.iter().fold(0.0f64, |m, t| m.max((t - t_center).abs())) * 10.0).round() / 10.0;
+            let amax = |ax: &[f64]| ax.iter().fold(0.0f64, |m, k| m.max(k.abs()));
+            let k_max = if p.is_radial {
+                let r = (amax(&axes[0]).powi(2) + amax(&axes[1]).powi(2)).sqrt();
+                [r, r]
+            } else {
+                [amax(&grid_axes[0]), amax(&grid_axes[1])]
+            };
+            let mut h = DefaultHasher::new();
+            ph.hash.hash(&mut h);
+            for x in [inp.b0_strength, inp.field_strength, t_span, t_center, k_max[0], k_max[1]] {
+                x.to_bits().hash(&mut h);
+            }
+            inp.b0_shim.hash(&mut h);
+            let key = h.finish();
+            if self.b0.as_ref().is_none_or(|(k, _)| *k != key) {
+                // free the memory first; the resampled bins may take up to B0_MEMORY bytes
+                self.b0 = None;
+                self.b0_comps = None;
+                let max_bins = B0_MEMORY / (n0 * n1 * na * ph.tissues.len() * 16).max(1);
+                let b = crate::b0::bin_phantom(ph, inp, &pk.kspace, k_max, t_span, t_center, max_bins);
+                self.b0 = Some((key, Arc::new(b)));
+            }
+            self.b0.as_ref().map(|(k, b)| (*k, b.clone()))
+        } else {
+            None
+        };
+        // resampled phantom k-space per off-resonance bin and tissue
+        let comps: Vec<Arc<Vec<Vec<C64>>>> = match &binned {
+            Some((key, b)) => {
+                let mut h = DefaultHasher::new();
+                key.hash(&mut h);
+                p.is_radial.hash(&mut h);
+                for a in [&axes[0], &axes[1], &p.k_angles, &grid_axes[0], &grid_axes[1]] {
+                    hash_f64s(&mut h, a);
+                }
+                let ckey = h.finish();
+                if self.b0_comps.as_ref().is_none_or(|(k, _)| *k != ckey) {
+                    self.b0_comps = None;
+                    let bins: Vec<Arc<Vec<Vec<C64>>>> = (0..b.freqs.len())
+                        .map(|l| {
+                            let ks: Vec<Array2<C64>> = (0..b.num_tissues()).into_par_iter().map(|t| b.kspace(t, l)).collect();
+                            Arc::new(resample_kspace(p, ph, &ks, &b.k_axes, &axes, &grid_axes))
+                        })
+                        .collect();
+                    self.b0_comps = Some((ckey, bins));
+                }
+                self.b0_comps.as_ref().unwrap().1.clone()
+            }
+            None => vec![self.kspace_comps(p, ph, &pk.kspace, &ph.k_axes, 0, &axes, &grid_axes)],
+        };
+        let freqs: Vec<f64> = binned.as_ref().map_or(vec![0.0], |(_, b)| b.freqs.clone());
+        let t_center = binned.as_ref().map_or(0.0, |(_, b)| b.t_center);
+        let nb = freqs.len();
         timings.push(("k-space resampling", t0.elapsed().as_secs_f64()));
 
         // ---- contrast weights per (i, j) and tissue: T2/T2' decay, fat dephasing, PD/T1, slice profile
         let t1 = Instant::now();
         let fi = field_index(inp.field_strength);
-        let n_read = p.k_read_axis.len();
         let fat_ratio = |r: &FatResonance| if inp.fatsat { r.ratio_with_fatsat } else { r.ratio };
+        // frequency-selective fat saturation with off-resonance: the saturation band (centred on
+        // the main fat peak) misses fat shifted by the local field and hits shifted water
+        let hz_per_ppm = GYRO * inp.field_strength;
+        let band = |f: f64| (-(f / (FATSAT_HALF_WIDTH * hz_per_ppm)).powi(2) * std::f64::consts::LN_2).exp();
+        let ratios: Vec<Vec<f64>> = freqs
+            .iter()
+            .map(|&f| {
+                FAT_RESONANCES
+                    .iter()
+                    .map(|r| if b0 && inp.fatsat { r.ratio * (1.0 - (1.0 - r.ratio_with_fatsat / r.ratio) * band(f)) } else { fat_ratio(r) })
+                    .collect()
+            })
+            .collect();
+        let main_fat = FAT_RESONANCES.iter().max_by(|a, b| a.ratio.partial_cmp(&b.ratio).unwrap()).map_or(-3.4, |r| r.shift) * hz_per_ppm;
+        let water_sat: Vec<f64> =
+            freqs.iter().map(|&f| if b0 && inp.fatsat { (1.0 - 0.95 * band(f - main_fat)) / (1.0 - 0.95 * band(-main_fat)) } else { 1.0 }).collect();
         let pd_t1w_fat: Vec<f64> =
             FAT_RESONANCES.iter().map(|r| component_pd_t1w(r.name, &inp.sequence_type, p.tr, inp.ti, inp.fa, inp.field_strength)).collect();
         struct TissueW {
@@ -384,50 +510,61 @@ impl Simulator {
             .collect();
         let nt = tw.len();
         let volume_slice = ph.is_volume_slice();
-        // tae[i, j]: time after excitation
-        let mut weights = vec![C64::new(0.0, 0.0); n0 * n1 * nt];
-        let mut tae_grid = vec![0.0; n0 * n1];
-        weights.par_chunks_mut(nt).zip(tae_grid.par_iter_mut()).enumerate().for_each(|(ij, (w, tae_out))| {
-            let (i, j) = (ij / n1, ij % n1);
-            let (i_read, i_pe) = if p.freq_dir == 0 { (i, j) } else { (j, i) };
-            let (rf, gr) = p.pe_echo[i_pe];
-            let ro = &p.readouts[rf][gr];
-            let st = if ro.area < 0.0 { p.sampling_time[n_read - 1 - i_read] } else { p.sampling_time[i_read] };
-            let tae = ro.center + st;
-            *tae_out = tae;
-            let t_rel = if p.is_gradient_echo { tae } else { tae - p.spin_echoes[i_pe] };
-            let e2p = (-t_rel.abs() / T2_PRIM).exp();
-            let kabs = (axes[0][i] * axes[0][i] + axes[1][j] * axes[1][j]).sqrt();
-            // 2D phantoms: slice thickness mimicked by a Lorentzian k-space filter; slices through
-            // 3D phantoms already contain the thickness integral (real partial volume)
-            let thick = if volume_slice { 1.0 } else { inp.slice_thickness * (-0.5 * inp.slice_thickness * kabs).exp() };
-            // fat: Σ_r ratio_r PD/T1w_r e^{-|t|/T2_r} e^{2πi γ B0 shift_r t_rel}
-            let mut fat = C64::new(0.0, 0.0);
-            for (r, res) in FAT_RESONANCES.iter().enumerate() {
-                let decay = (-tae.abs() / res.t2[fi]).exp() * e2p;
-                let deph = C64::from_polar(1.0, 2.0 * PI * GYRO * inp.field_strength * res.shift * t_rel * 1e-3);
-                fat += deph * (decay * pd_t1w_fat[r] * fat_ratio(res));
-            }
-            for (t, x) in tw.iter().enumerate() {
-                let water = (-tae.abs() / x.t2).exp() * e2p * x.water;
-                w[t] = (C64::new(water, 0.0) + if x.ff > 0.0 { fat * x.ff } else { C64::new(0.0, 0.0) }) * thick;
-            }
-        });
+        // tae[i, j]: time after excitation; weights per tissue and off-resonance bin computed for
+        // each (i, j) and applied to the resampled phantom k-space
+        let nw = nt * nb;
         let n = n0 * n1 * na;
         let noise = self.noise(n);
-        let mut measured = vec![C64::new(0.0, 0.0); n];
         let noise_std = p.noise_std;
-        measured.par_chunks_mut(na).enumerate().for_each(|(ij, m)| {
-            let w = &weights[ij * nt..(ij + 1) * nt];
-            for (a, v) in m.iter_mut().enumerate() {
-                let s = ij * na + a;
-                let mut acc = noise[s] * noise_std;
-                for t in 0..nt {
-                    acc += comps[t][s] * w[t];
+        let mut measured = vec![C64::new(0.0, 0.0); n];
+        let mut tae_grid = vec![0.0; n0 * n1];
+        measured.par_chunks_mut(na).zip(tae_grid.par_iter_mut()).enumerate().for_each_init(
+            || vec![C64::new(0.0, 0.0); nw],
+            |w, (ij, (m, tae_out))| {
+                let (i, j) = (ij / n1, ij % n1);
+                let (tae, t_rel) = times(ij);
+                *tae_out = tae;
+                let e2p = (-t_rel.abs() / T2_PRIM).exp();
+                let kabs = (axes[0][i] * axes[0][i] + axes[1][j] * axes[1][j]).sqrt();
+                // 2D phantoms: slice thickness mimicked by a Lorentzian k-space filter; slices
+                // through 3D phantoms already contain the thickness integral (real partial volume)
+                let thick = if volume_slice { 1.0 } else { inp.slice_thickness * (-0.5 * inp.slice_thickness * kabs).exp() };
+                // fat: Σ_r ratio_r PD/T1w_r e^{-|t|/T2_r} e^{2πi γ B0 shift_r t_rel}
+                let mut deph = [C64::new(0.0, 0.0); FAT_RESONANCES.len()];
+                let mut dpd = [0.0; FAT_RESONANCES.len()];
+                for (r, res) in FAT_RESONANCES.iter().enumerate() {
+                    let decay = (-tae.abs() / res.t2[fi]).exp() * e2p;
+                    deph[r] = C64::from_polar(1.0, 2.0 * PI * GYRO * inp.field_strength * res.shift * t_rel * 1e-3);
+                    dpd[r] = decay * pd_t1w_fat[r];
                 }
-                *v = acc;
-            }
-        });
+                for l in 0..nb {
+                    let mut fat = C64::new(0.0, 0.0);
+                    for r in 0..FAT_RESONANCES.len() {
+                        fat += deph[r] * (dpd[r] * ratios[l][r]);
+                    }
+                    // off-resonance e^{2πi Δf (t_rel − t_center)} (B0 inhomogeneity)
+                    let phase = b0.then(|| C64::from_polar(1.0, 2.0 * PI * freqs[l] * (t_rel - t_center) * 1e-3));
+                    for (t, x) in tw.iter().enumerate() {
+                        let water = (-tae.abs() / x.t2).exp() * e2p * x.water * water_sat[l];
+                        let v = (C64::new(water, 0.0) + if x.ff > 0.0 { fat * x.ff } else { C64::new(0.0, 0.0) }) * thick;
+                        w[t * nb + l] = match phase {
+                            Some(ph) => v * ph,
+                            None => v,
+                        };
+                    }
+                }
+                for (a, v) in m.iter_mut().enumerate() {
+                    let s = ij * na + a;
+                    let mut acc = noise[s] * noise_std;
+                    for (l, c) in comps.iter().enumerate() {
+                        for t in 0..nt {
+                            acc += c[t][s] * w[t * nb + l];
+                        }
+                    }
+                    *v = acc;
+                }
+            },
+        );
         // spike noise and RF interference (same realisation until the noise is renewed)
         let spikes = inp.noise_type.contains("spikes");
         let rf = inp.noise_type.contains("RF");
@@ -531,7 +668,20 @@ impl Simulator {
             ax
         });
         timings.push(("total", t0.elapsed().as_secs_f64()));
-        SimOutput { image_array, fov: p.fov, gridded, grid_axes, zerofilled, processed_axes, measured, measured_shape: [n0, n1, na], tae: tae_grid, timings }
+        let field_map = b0.then(|| crate::b0::field_map(ph, inp, image_array.shape(), p.fov));
+        SimOutput {
+            image_array,
+            fov: p.fov,
+            gridded,
+            grid_axes,
+            zerofilled,
+            processed_axes,
+            measured,
+            measured_shape: [n0, n1, na],
+            tae: tae_grid,
+            field_map,
+            timings,
+        }
     }
 }
 
@@ -558,6 +708,30 @@ mod tests {
         let num: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum();
         let den: f64 = b.iter().map(|y| y * y).sum();
         (num / den).sqrt()
+    }
+
+    #[test]
+    fn b0_inhomogeneity_affects_gradient_echo_more_than_spin_echo() {
+        let at_orbits = [("slice_pos_HF", Value::Num(-10.0)), ("field_strength", Value::Num(3.0)), ("noise_gain", Value::Num(0.0))];
+        let effect = |seq: &str, te: f64| {
+            let mut base: Vec<(&str, Value)> = at_orbits.to_vec();
+            base.push(("sequence_type", Value::s(seq)));
+            base.push(("TE", Value::Num(te)));
+            let off = image(&base);
+            base.push(("b0_inhomogeneity", Value::Bool(true)));
+            let on = image(&base);
+            rel_diff(&on, &off)
+        };
+        let gre = effect("Spoiled Gradient Echo", 20.0);
+        let se = effect("Spin Echo", 20.0);
+        assert!(gre > 0.03, "gradient echo is affected: {gre}");
+        assert!(se < 0.5 * gre, "spin echo refocuses static off-resonance: {se} vs {gre}");
+        // strength 0 is the same as no inhomogeneity
+        let mut base: Vec<(&str, Value)> = at_orbits.to_vec();
+        let off = image(&base);
+        base.push(("b0_inhomogeneity", Value::Bool(true)));
+        base.push(("b0_strength", Value::Num(0.0)));
+        assert_eq!(image(&base), off);
     }
 
     #[test]
