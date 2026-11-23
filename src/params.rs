@@ -5,6 +5,13 @@ use std::sync::OnceLock;
 
 use crate::{convert, formatting};
 
+/// Kinds of noise (`noise_type`): thermal noise, optionally with spike noise (herringbone
+/// artifact) or narrow-band RF interference (zipper artifact)
+pub const NOISE_TYPES: &[&str] = &["Thermal (Gaussian)", "Thermal + spikes", "Thermal + RF interference", "Thermal + spikes + RF interference"];
+
+/// Standard noise gain (`noise_gain` default, 100 % noise level)
+pub const STANDARD_NOISE_GAIN: f64 = 3.0;
+
 pub const CUSTOM_PRESET: &str = "(custom)";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -334,6 +341,8 @@ fn build(phantom_names: &[String], preset_names: &[String]) -> Vec<ParamSpec> {
         ),
         number("min_voxel_size", "Phantom resolution limit (to bound computation time) [mm]", None, 0.0, 0.5, -1, None),
         number("noise_gain", "Scaling factor for noise standard deviation", None, 0.0, 3.0, -1, None),
+        spec("noise_type", "Noise type", Select, Some(str_options(NOISE_TYPES)), Value::s(NOISE_TYPES[0]), -1, None, false),
+        number("interference_level", "Strength of spikes / RF interference", Some((0.0, 4.0)), 0.05, 1.0, -1, None),
         spec(
             "sequence_type",
             "Pulse sequence",

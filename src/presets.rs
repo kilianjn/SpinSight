@@ -2,10 +2,32 @@
 
 use crate::params::Value;
 
+/// The standard protocol (start-up and reset): a T1-weighted spin echo
+pub const STANDARD_PRESET: &str = "T1w-SE";
+
+const STANDARD_PROTOCOL: &str = r#"EPI_factor = 1
+FatSat = false
+NSA = 1
+TE = 12.0
+TR = 500.0
+echo_order = "Linear"
+frequency_direction = "anterior-posterior"
+matrix_F = 256
+matrix_P = 224
+partial_Fourier_factor = 1.0
+phase_oversampling = 0
+pixel_bandwidth = 160.0
+sequence_type = "Spin Echo"
+slice_thickness = 4.0
+trajectory = "Cartesian"
+turbo_factor = 1
+"#;
+
 const BUILTIN: &[(&str, &str)] = &[
     ("GRASE", include_str!("../spinsight/presets/GRASE.toml")),
     ("GRE-EPI", include_str!("../spinsight/presets/GRE-EPI.toml")),
     ("T1w-GRE", include_str!("../spinsight/presets/T1w-GRE.toml")),
+    (STANDARD_PRESET, STANDARD_PROTOCOL),
     ("T1w-TSE", include_str!("../spinsight/presets/T1w-TSE.toml")),
     ("T2-FLAIR", include_str!("../spinsight/presets/T2-FLAIR.toml")),
     ("T2w-TSE", include_str!("../spinsight/presets/T2w-TSE.toml")),

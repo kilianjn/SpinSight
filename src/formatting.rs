@@ -89,7 +89,11 @@ pub fn fov(fov: f64) -> String {
 }
 
 pub fn relative_snr(snr: f64) -> String {
-    format!("{:.0}%", snr * 100.0)
+    if snr.is_finite() {
+        format!("{:.0}%", snr * 100.0)
+    } else {
+        "∞ (no noise)".to_string()
+    }
 }
 
 pub fn percentage(factor: f64) -> String {

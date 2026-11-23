@@ -3,6 +3,7 @@
 //! the left, viewing segments (image, k-space, pulse sequence) in the centre and the parameter
 //! card with its tabs and the acquisition status line at the bottom.
 
+mod conflicts;
 mod exam_ui;
 mod maker;
 mod markdown;
@@ -16,7 +17,7 @@ use std::time::Instant;
 
 use egui::{Color32, RichText, TextureHandle, Ui};
 
-use crate::controller::{Controller, ParamState};
+use crate::controller::{Controller, ParamState, SliderRange, UNCHECKED_CHANGES};
 use crate::imaging::{self, simulation_key};
 use crate::params::{Value, Widget, CUSTOM_PRESET};
 use crate::phantom;
@@ -146,6 +147,17 @@ pub struct SpinSightApp {
     show_planning: bool,
     planning: planning::Planning,
     exam: exam_ui::ExamState,
+    /// slider ranges (values that adjust other parameters) and conflict confirmation
+    ranges: conflicts::RangeAnalyzer,
+    range_names: Vec<&'static str>,
+    confirm_conflicts: bool,
+    show_ranges: bool,
+    pending_conflict: Option<conflicts::PendingConflict>,
+    /// parameter whose changes are ignored (cancelled) or not asked again (accepted) until the
+    /// mouse button is released
+    conflict_hold: Option<&'static str>,
+    conflict_accepted: Option<&'static str>,
+    confirm_reset: bool,
     tab: CardTab,
     sliders_with_text: bool,
     text_buf: HashMap<&'static str, String>,
@@ -163,7 +175,10 @@ impl SpinSightApp {
     pub fn new(cc: &eframe::CreationContext, opts: Options) -> Result<Self, String> {
         let ctx = cc.egui_ctx.clone();
         let worker = Worker::spawn(move || ctx.request_repaint());
+        let ctx = cc.egui_ctx.clone();
+        let ranges = conflicts::RangeAnalyzer::spawn(move || ctx.request_repaint());
         let mut ctrl = Controller::new()?;
+        ctrl.reset_to_standard()?;
         let mut status = None;
         if let Some(f) = &opts.settings_file {
             if f.is_file() {
@@ -205,6 +220,14 @@ impl SpinSightApp {
             show_planning: true,
             planning: planning::Planning::default(),
             exam: exam_ui::ExamState::default(),
+            ranges,
+            range_names: Vec::new(),
+            confirm_conflicts: true,
+            show_ranges: true,
+            pending_conflict: None,
+            conflict_hold: None,
+            conflict_accepted: None,
+            confirm_reset: false,
             tab: CardTab::Routine,
             sliders_with_text: opts.sliders_with_text,
             text_buf: HashMap::new(),
@@ -243,11 +266,127 @@ impl SpinSightApp {
     }
 
     fn apply_changes(&mut self, changes: Vec<(&'static str, Value)>) {
+        if self.pending_conflict.is_some() {
+            return; // a change waits for confirmation
+        }
         let object_before = self.ctrl.inputs.object.clone();
         for (name, value) in changes {
+            if self.conflict_hold == Some(name) {
+                continue;
+            }
+            if !UNCHECKED_CHANGES.contains(&name) {
+                let adjustments = self.ctrl.preview(name, &value);
+                if !adjustments.is_empty() && (!self.confirm_conflicts || self.conflict_accepted == Some(name)) {
+                    self.ctrl.change_with_adjustments(name, value, &adjustments);
+                    continue;
+                }
+                if !adjustments.is_empty() {
+                    let st = self.ctrl.state(name);
+                    let new =
+                        st.spec.options.iter().flatten().chain(st.options.iter()).find(|o| o.value == value).map(|o| o.label.clone()).unwrap_or_else(|| {
+                            match &value {
+                                Value::Num(v) => format!("{v}"),
+                                Value::Str(t) => t.clone(),
+                                Value::Bool(b) => {
+                                    if *b {
+                                        "on".into()
+                                    } else {
+                                        "off".into()
+                                    }
+                                }
+                            }
+                        });
+                    let old = match &st.value {
+                        Value::Bool(b) => {
+                            if *b {
+                                "on".into()
+                            } else {
+                                "off".into()
+                            }
+                        }
+                        _ => st.value_label(),
+                    };
+                    let new = if matches!(value, Value::Bool(_)) {
+                        if value.bool() {
+                            "on".into()
+                        } else {
+                            "off".into()
+                        }
+                    } else {
+                        new
+                    };
+                    self.pending_conflict =
+                        Some(conflicts::PendingConflict { name, label: st.label.trim_end_matches(" [°]").to_string(), old, value, new, adjustments });
+                    break;
+                }
+            }
             self.ctrl.on_change(name, value);
         }
         self.after_controller_change(&object_before);
+    }
+
+    /// Reset all parameters to the standard protocol (the phantom and the examination are kept)
+    fn reset_all(&mut self) {
+        if let Err(e) = self.ctrl.reset_to_standard() {
+            self.status = Some(e);
+            return;
+        }
+        self.ranges.clear();
+        self.planning = planning::Planning::default();
+        self.exam.review = None;
+        self.text_buf.clear();
+        self.pending_conflict = None;
+        self.submitted_key = None;
+        self.reset_plots = true;
+        self.status = Some("All parameters were reset to the standard protocol (T1w SE)".into());
+        self.submit_if_needed();
+    }
+
+    fn reset_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_reset {
+            return;
+        }
+        let mut close = false;
+        egui::Modal::new(egui::Id::unique("confirm_reset")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading("Reset to standard");
+            ui.label("Reset all parameters to the standard protocol, a T1-weighted spin echo (TR 500 ms, minimum TE)? Field of view, slice position, noise and display settings return to their defaults as well. The phantom and the acquired series are kept.");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Reset").strong()).clicked() {
+                    self.reset_all();
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+            });
+        });
+        if close {
+            self.confirm_reset = false;
+        }
+    }
+
+    /// The confirmation dialog of a parameter conflict
+    fn conflict_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.pending_conflict else { return };
+        let mut warn = self.confirm_conflicts;
+        let decision = conflicts::dialog(ctx, pending, &mut warn);
+        self.confirm_conflicts = warn;
+        match decision {
+            Some(conflicts::Decision::Accept) => {
+                let p = self.pending_conflict.take().unwrap();
+                let before = self.ctrl.inputs.object.clone();
+                self.ctrl.change_with_adjustments(p.name, p.value, &p.adjustments);
+                self.conflict_accepted = Some(p.name);
+                self.after_controller_change(&before);
+            }
+            Some(conflicts::Decision::Cancel) => {
+                let p = self.pending_conflict.take().unwrap();
+                self.conflict_hold = Some(p.name);
+            }
+            None => {}
+        }
     }
 
     fn after_controller_change(&mut self, object_before: &str) {
@@ -277,11 +416,21 @@ impl SpinSightApp {
     // parameter widgets
 
     fn param_widget(&mut self, ui: &mut Ui, name: &'static str, changes: &mut Vec<(&'static str, Value)>) {
-        let st = self.ctrl.state(name);
-        if !st.visible() {
+        if !self.ctrl.state(name).visible() {
             return;
         }
-        let (change, hovered) = param_row(ui, st, self.show_help, self.sliders_with_text, &mut self.text_buf, PARAM_WIDTH);
+        if self.ctrl.widget(name) == Widget::DiscreteSlider && !self.range_names.contains(&name) {
+            self.range_names.push(name);
+        }
+        let st = self.ctrl.state(name);
+        let range = self.ranges.range(&self.ctrl, name);
+        let ctrl = &self.ctrl;
+        let tip = |v: &Value| -> Option<String> {
+            let adj = ctrl.preview(name, v);
+            (!adj.is_empty()).then(|| conflicts::describe(&adj))
+        };
+        let style = RowStyle { help: self.show_help, with_text: self.sliders_with_text, width: PARAM_WIDTH, show_ranges: self.show_ranges };
+        let (change, hovered) = param_row(ui, st, &style, &mut self.text_buf, range, &tip);
         if hovered {
             match name {
                 "TE" => self.spans.te = true,
@@ -380,7 +529,14 @@ impl SpinSightApp {
                 ui.add_space(8.0);
                 let preset = self.ctrl.str("load_presets").to_string();
                 ui.label(RichText::new("Protocol").color(Color32::GRAY));
-                ui.label(RichText::new(if preset == CUSTOM_PRESET { "(custom)".to_string() } else { preset }).strong());
+                ui.label(RichText::new(if preset == CUSTOM_PRESET { "(custom)".to_string() } else { preset_title(&preset) }).strong());
+                if ui
+                    .button("↺ Reset")
+                    .on_hover_text("Reset all parameters (protocol, FOV, slice position, noise) to the standard: a T1-weighted spin echo")
+                    .clicked()
+                {
+                    self.confirm_reset = true;
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let dark = ui.visuals().dark_mode;
                     if ui.button(if dark { "☀" } else { "☾" }).on_hover_text("Toggle light/dark theme").clicked() {
@@ -509,13 +665,75 @@ impl SpinSightApp {
                 }
 
                 ui.add_space(10.0);
+                self.noise_menu(ui, changes);
+
+                ui.add_space(10.0);
                 section_title(ui, "OPTIONS");
                 ui.checkbox(&mut self.sliders_with_text, "Text boxes next to sliders");
-                if ui.button("New noise realisation").clicked() {
-                    self.renew_noise = true;
-                    self.submit_if_needed();
-                }
+                ui.checkbox(&mut self.confirm_conflicts, "Warn before other parameters change")
+                    .on_hover_text("Ask before a change that also adjusts other parameters (e.g. a longer TE that needs a longer TR)");
+                ui.checkbox(&mut self.show_ranges, "Colour-coded slider ranges")
+                    .on_hover_text("Green: values that change no other parameter; orange: values for which other parameters are adjusted");
             });
+        });
+    }
+
+    /// Noise section of the browser: kind and strength of the noise
+    fn noise_menu(&mut self, ui: &mut Ui, changes: &mut Vec<(&'static str, Value)>) {
+        section_title(ui, "NOISE");
+        let help = self.show_help;
+        let tip = |r: egui::Response, name: &str| {
+            if help {
+                if let Some(t) = tooltips::tooltip(name) {
+                    r.on_hover_ui(|ui| markdown::show(ui, t, 380.0));
+                }
+            }
+        };
+        let current = self.ctrl.inputs.noise_type.clone();
+        ui.label(RichText::new("Type").color(Color32::GRAY));
+        let r = egui::ComboBox::from_id_salt("noise_type").selected_text(current.as_str()).width(ui.available_width() - 8.0).show_ui(ui, |ui| {
+            for &t in crate::params::NOISE_TYPES {
+                if ui.selectable_label(current == t, t).clicked() && current != t {
+                    changes.push(("noise_type", Value::s(t)));
+                }
+            }
+        });
+        tip(r.response, "noise_type");
+        ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
+        let mut level = self.ctrl.inputs.noise_gain / crate::params::STANDARD_NOISE_GAIN * 100.0;
+        ui.label(RichText::new("Thermal noise level").color(Color32::GRAY));
+        let r = ui.add(egui::Slider::new(&mut level, 0.0..=400.0).step_by(5.0).suffix(" %"));
+        if r.changed() {
+            changes.push(("noise_gain", Value::Num(level / 100.0 * crate::params::STANDARD_NOISE_GAIN)));
+        }
+        tip(r, "noise_gain");
+        if current != crate::params::NOISE_TYPES[0] {
+            let mut strength = self.ctrl.inputs.interference_level * 100.0;
+            let what = match (current.contains("spikes"), current.contains("RF")) {
+                (true, true) => "Spike / RF strength",
+                (true, false) => "Spike strength",
+                _ => "RF interference strength",
+            };
+            ui.label(RichText::new(what).color(Color32::GRAY));
+            let r = ui.add(egui::Slider::new(&mut strength, 0.0..=400.0).step_by(5.0).suffix(" %"));
+            if r.changed() {
+                changes.push(("interference_level", Value::Num(strength / 100.0)));
+            }
+            tip(r, "interference_level");
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("New realisation").on_hover_text("Draw new random noise (and new spike positions / interference frequency)").clicked() {
+                self.renew_noise = true;
+                self.submit_if_needed();
+            }
+            let standard = current == crate::params::NOISE_TYPES[0]
+                && self.ctrl.inputs.noise_gain == crate::params::STANDARD_NOISE_GAIN
+                && self.ctrl.inputs.interference_level == 1.0;
+            if ui.add_enabled(!standard, egui::Button::new("Standard")).on_hover_text("Thermal noise at 100 %").clicked() {
+                changes.push(("noise_type", Value::s(crate::params::NOISE_TYPES[0])));
+                changes.push(("noise_gain", Value::Num(crate::params::STANDARD_NOISE_GAIN)));
+                changes.push(("interference_level", Value::Num(1.0)));
+            }
         });
     }
 
@@ -587,8 +805,20 @@ impl SpinSightApp {
                         self.tab = t;
                     }
                 }
+                if self.show_ranges {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let legend = |ui: &mut Ui, color: Color32, text: &str| {
+                            ui.label(RichText::new(text).small().color(Color32::GRAY));
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 10.0), egui::Sense::hover());
+                            ui.painter().line_segment([r.left_center(), r.right_center()], egui::Stroke::new(3.0, color));
+                        };
+                        legend(ui, conflicts::ADJUST_COLOR, "adjusts other parameters");
+                        legend(ui, conflicts::FREE_COLOR, "no other changes");
+                    });
+                }
             });
             ui.separator();
+            self.range_names.clear();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let names: Vec<&'static str> = self.tab.params().iter().copied().filter(|n| self.ctrl.state(n).visible()).collect();
                 let col_w = PARAM_WIDTH + if self.show_help { 52.0 } else { 30.0 };
@@ -609,6 +839,8 @@ impl SpinSightApp {
                     }
                 });
             });
+            let names = std::mem::take(&mut self.range_names);
+            self.ranges.request(&self.ctrl, names);
         });
     }
 
@@ -892,6 +1124,7 @@ fn preset_title(p: &str) -> String {
         "T2w-TSE" => "T2w TSE".into(),
         "T1w-TSE" => "T1w TSE".into(),
         "T1w-GRE" => "T1w GRE".into(),
+        "T1w-SE" => "T1w SE".into(),
         "T2-FLAIR" => "T2 FLAIR".into(),
         "GRE-EPI" => "GRE EPI".into(),
         other => other.to_string(),
@@ -929,8 +1162,26 @@ fn help_icon(ui: &mut Ui, name: &str) -> bool {
     hovered
 }
 
-/// One parameter widget: returns (new value if changed, hovered)
-fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf: &mut HashMap<&'static str, String>, width: f32) -> (Option<Value>, bool) {
+/// Display options of parameter widgets
+struct RowStyle {
+    help: bool,
+    with_text: bool,
+    width: f32,
+    show_ranges: bool,
+}
+
+/// One parameter widget: returns (new value if changed, hovered). `range`: the selectable values
+/// of a discrete slider with the information which of them adjust other parameters; `tip`
+/// describes the adjustments of a value.
+fn param_row(
+    ui: &mut Ui,
+    st: &ParamState,
+    style: &RowStyle,
+    text_buf: &mut HashMap<&'static str, String>,
+    range: Option<&SliderRange>,
+    tip: &dyn Fn(&Value) -> Option<String>,
+) -> (Option<Value>, bool) {
+    let (help, with_text, width) = (style.help, style.with_text, style.width);
     let name = st.spec.name;
     let mut change = None;
     let mut help_hovered = false;
@@ -981,7 +1232,9 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
                     ui.label(RichText::new(format!("{}:", st.label)).color(Color32::GRAY));
                     ui.label(RichText::new(st.value_label()).strong());
                 });
-                let n = st.options.len();
+                // the extended range (if known) includes values that adjust other parameters
+                let opts: &[crate::params::Opt] = range.map_or(st.options.as_slice(), |r| r.options.as_slice());
+                let n = opts.len();
                 ui.horizontal(|ui| {
                     let text_w = if with_text { 64.0 } else { 0.0 };
                     ui.spacing_mut().slider_width = width - 20.0 - text_w;
@@ -989,10 +1242,27 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
                         let mut dummy = 0usize;
                         ui.add_enabled(false, egui::Slider::new(&mut dummy, 0..=1).show_value(false));
                     } else {
-                        let mut idx = st.option_index().unwrap_or(0);
+                        let current = opts.iter().position(|o| o.value == st.value).or_else(|| {
+                            let vals: Vec<f64> = opts.iter().map(|o| o.value.num()).collect();
+                            crate::params::snap(st.value.num(), &vals, crate::params::SnapMode::Nearest).and_then(|s| vals.iter().position(|&x| x == s))
+                        });
+                        let mut idx = current.unwrap_or(0);
                         let r = ui.add_enabled(n > 1, egui::Slider::new(&mut idx, 0..=n - 1).show_value(false));
-                        if r.changed() && st.options[idx].value != st.value {
-                            change = Some(st.options[idx].value.clone());
+                        if r.changed() && opts[idx].value != st.value {
+                            change = Some(opts[idx].value.clone());
+                        }
+                        if let Some(rg) = range {
+                            if style.show_ranges {
+                                conflicts::paint_band(ui, r.rect, &rg.adjusts);
+                            }
+                            if r.hovered() && !r.dragged() {
+                                if let Some(k) = conflicts::hovered_index(ui, r.rect, n) {
+                                    if rg.adjusts[k] {
+                                        let what = tip(&opts[k].value).unwrap_or_else(|| "other parameters are adjusted".into());
+                                        r.on_hover_text(format!("{}: {}", opts[k].label, what));
+                                    }
+                                }
+                            }
                         }
                     }
                     if with_text {
@@ -1004,7 +1274,7 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
                             let txt = buf.trim().trim_end_matches('%').to_string();
                             if let Ok(x) = txt.parse::<f64>() {
                                 let x = if is_pct { x / 100.0 } else { x };
-                                let vals = st.option_values();
+                                let vals: Vec<f64> = opts.iter().map(|o| o.value.num()).collect();
                                 if let Some(s) = crate::params::snap(x, &vals, crate::params::SnapMode::Nearest) {
                                     if s != st.value.num() {
                                         change = Some(Value::Num(s));
@@ -1027,6 +1297,11 @@ fn param_row(ui: &mut Ui, st: &ParamState, help: bool, with_text: bool, text_buf
 impl eframe::App for SpinSightApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_scan();
+        self.ranges.poll();
+        if !ui.ctx().input(|i| i.pointer.any_down()) {
+            self.conflict_hold = None;
+            self.conflict_accepted = None;
+        }
         if let Some(r) = self.worker.poll() {
             if r.id >= self.result.as_ref().map_or(0, |x| x.id) {
                 self.result = Some(r);
@@ -1047,6 +1322,8 @@ impl eframe::App for SpinSightApp {
         });
         self.dialogs(&ctx);
         self.exam_dialogs(&ctx);
+        self.conflict_dialog(&ctx);
+        self.reset_dialog(&ctx);
         if self.spans.te != prev_spans.te || self.spans.tr != prev_spans.tr || self.spans.ti != prev_spans.ti {
             ctx.request_repaint();
         }

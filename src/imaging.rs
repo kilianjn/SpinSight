@@ -135,12 +135,13 @@ pub struct Simulator {
     gridder: Option<GridderCache>,
     noise: Option<(usize, u64, Arc<Vec<C64>>)>,
     rng: Rng,
+    seed: u64,
     noise_generation: u64,
 }
 
 impl Default for Simulator {
     fn default() -> Self {
-        Simulator { comps: None, gridder: None, noise: None, rng: Rng::new(0x5EED_5EED_1234_5678), noise_generation: 0 }
+        Simulator::with_seed(0x5EED_5EED_1234_5678)
     }
 }
 
@@ -182,6 +183,51 @@ impl Rng {
         (r * th.cos(), r * th.sin())
     }
 }
+
+/// Add spike noise (a few corrupted k-space samples: herringbone stripes) and/or narrow-band RF
+/// interference (a fixed frequency during every readout with a random phase per line: zipper
+/// line along the phase direction) to the measured samples, ordered (n0, n1, na)
+#[allow(clippy::too_many_arguments)]
+fn add_interference(measured: &mut [C64], p: &Protocol, shape: [usize; 2], na: usize, spikes: bool, rf: bool, level: f64, seed: u64) {
+    let s0 = measured.iter().fold(0.0f64, |m, z| m.max(z.norm()));
+    let n = measured.len();
+    if s0 <= 0.0 || n == 0 {
+        return;
+    }
+    let mut rng = Rng::new(seed);
+    if spikes {
+        for _ in 0..2 {
+            let s = ((rng.uniform() * n as f64) as usize).min(n - 1);
+            let phase = 2.0 * PI * rng.uniform();
+            measured[s] += C64::from_polar(level * SPIKE_AMPLITUDE * s0, phase);
+        }
+    }
+    if rf {
+        let [n0, n1] = shape;
+        let (n_read, n_pe) = if p.freq_dir == 0 { (n0, n1) } else { (n1, n0) };
+        let lines = n_pe * na;
+        // frequency offset in cycles per readout sample (position of the zipper line)
+        let f = (rng.uniform() - 0.5) * 0.8;
+        let phases: Vec<f64> = (0..lines).map(|_| 2.0 * PI * rng.uniform()).collect();
+        let amp = level * RF_AMPLITUDE * s0 * (lines as f64).sqrt() / n as f64;
+        measured.par_chunks_mut(na).enumerate().for_each(|(ij, m)| {
+            let (i, j) = (ij / n1, ij % n1);
+            let (i_read, i_pe) = if p.freq_dir == 0 { (i, j) } else { (j, i) };
+            // readouts with negative gradient (EPI) are sampled in reverse order
+            let (rfi, gr) = p.pe_echo[i_pe.min(p.pe_echo.len() - 1)];
+            let reversed = p.readouts[rfi][gr].area < 0.0;
+            let t = if reversed { n_read - 1 - i_read } else { i_read } as f64;
+            for (a, v) in m.iter_mut().enumerate() {
+                *v += C64::from_polar(amp, 2.0 * PI * f * t + phases[i_pe * na + a]);
+            }
+        });
+    }
+}
+
+/// Spike amplitude relative to the k-space maximum at interference level 1
+const SPIKE_AMPLITUDE: f64 = 0.4;
+/// RF interference amplitude (relative to the k-space maximum, scaled with the number of samples)
+const RF_AMPLITUDE: f64 = 4.0;
 
 fn hash_f64s(h: &mut DefaultHasher, v: &[f64]) {
     v.len().hash(h);
@@ -240,7 +286,7 @@ fn make_gridder(k: &[[f64; 2]], fov: [f64; 2], with_density: bool) -> (Nufft2d, 
 impl Simulator {
     /// Simulator with its own noise sequence (e.g. one per acquired series)
     pub fn with_seed(seed: u64) -> Self {
-        Simulator { rng: Rng::new(seed), ..Default::default() }
+        Simulator { comps: None, gridder: None, noise: None, rng: Rng::new(seed), seed, noise_generation: 0 }
     }
 
     /// Draw a new noise realisation on the next run
@@ -382,6 +428,13 @@ impl Simulator {
                 *v = acc;
             }
         });
+        // spike noise and RF interference (same realisation until the noise is renewed)
+        let spikes = inp.noise_type.contains("spikes");
+        let rf = inp.noise_type.contains("RF");
+        if (spikes || rf) && inp.interference_level > 0.0 {
+            let seed = self.seed ^ self.noise_generation.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            add_interference(&mut measured, p, [n0, n1], na, spikes, rf, inp.interference_level, seed);
+        }
         timings.push(("contrast & noise", t1.elapsed().as_secs_f64()));
 
         // ---- gridding
@@ -479,5 +532,47 @@ impl Simulator {
         });
         timings.push(("total", t0.elapsed().as_secs_f64()));
         SimOutput { image_array, fov: p.fov, gridded, grid_axes, zerofilled, processed_axes, measured, measured_shape: [n0, n1, na], tae: tae_grid, timings }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller::Controller;
+    use crate::params::Value;
+
+    fn image(changes: &[(&str, Value)]) -> Vec<f64> {
+        let mut c = Controller::new().unwrap();
+        c.reset_to_standard().unwrap();
+        c.on_change("matrix_F", Value::Num(128.0));
+        c.on_change("matrix_P", Value::Num(128.0));
+        for (k, v) in changes {
+            c.on_change(k, v.clone());
+        }
+        let pk = crate::phantom::compute_kspace(&c.phantom, None);
+        let out = Simulator::default().run(&c.protocol, &c.inputs, &c.phantom, &pk);
+        display_image(&out, "Magnitude").data
+    }
+
+    fn rel_diff(a: &[f64], b: &[f64]) -> f64 {
+        let num: f64 = a.iter().zip(b).map(|(x, y)| (x - y).powi(2)).sum();
+        let den: f64 = b.iter().map(|y| y * y).sum();
+        (num / den).sqrt()
+    }
+
+    #[test]
+    fn noise_types_and_levels() {
+        let thermal = image(&[]);
+        let clean = image(&[("noise_gain", Value::Num(0.0))]);
+        let double = image(&[("noise_gain", Value::Num(6.0))]);
+        let d1 = rel_diff(&thermal, &clean);
+        let d2 = rel_diff(&double, &clean);
+        assert!(d1 > 0.0 && (d2 / d1 - 2.0).abs() < 0.3, "noise scales with the level: {d1} {d2}");
+        for t in &crate::params::NOISE_TYPES[1..] {
+            let with = image(&[("noise_type", Value::s(t))]);
+            assert!(rel_diff(&with, &thermal) > 0.01, "{t} changes the image");
+            let off = image(&[("noise_type", Value::s(t)), ("interference_level", Value::Num(0.0))]);
+            assert_eq!(off, thermal, "{t} at strength 0 is pure thermal noise");
+        }
     }
 }

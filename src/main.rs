@@ -166,6 +166,7 @@ fn parse_set(k: &str, v: &str) -> Result<(String, Value), String> {
 
 fn headless(cli: &Cli) -> Result<(), String> {
     let mut ctrl = Controller::new()?;
+    ctrl.reset_to_standard()?;
     if let Some(f) = &cli.settings {
         ctrl.load_settings_file(f)?;
     }

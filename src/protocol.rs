@@ -28,6 +28,10 @@ pub struct Inputs {
     pub field_strength: f64,
     pub min_voxel_size: f64,
     pub noise_gain: f64,
+    /// kind of noise: thermal (white Gaussian) with optional spikes / RF interference
+    pub noise_type: String,
+    /// strength of spikes / RF interference (1 = standard)
+    pub interference_level: f64,
     pub sequence_type: String,
     pub pixel_bandwidth: f64,
     pub nsa: f64,
@@ -86,6 +90,8 @@ pub const INPUT_NAMES: &[&str] = &[
     "field_strength",
     "min_voxel_size",
     "noise_gain",
+    "noise_type",
+    "interference_level",
     "sequence_type",
     "pixel_bandwidth",
     "FOV_bandwidth",
@@ -149,6 +155,8 @@ impl Default for Inputs {
             field_strength: num("field_strength"),
             min_voxel_size: num("min_voxel_size"),
             noise_gain: num("noise_gain"),
+            noise_type: s("noise_type"),
+            interference_level: num("interference_level"),
             sequence_type: s("sequence_type"),
             pixel_bandwidth: num("pixel_bandwidth"),
             nsa: num("NSA"),
@@ -219,6 +227,8 @@ impl Inputs {
             "field_strength" => self.field_strength = num()?,
             "min_voxel_size" => self.min_voxel_size = num()?,
             "noise_gain" => self.noise_gain = num()?,
+            "noise_type" => self.noise_type = s(),
+            "interference_level" => self.interference_level = num()?,
             "sequence_type" => self.sequence_type = s(),
             "pixel_bandwidth" => self.pixel_bandwidth = num()?,
             "FOV_bandwidth" => {} // unused input node

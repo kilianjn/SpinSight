@@ -66,6 +66,84 @@ pub struct Info {
     pub spoke_angle_visible: bool,
 }
 
+/// A parameter that a change of another parameter would adjust
+#[derive(Debug, Clone, PartialEq)]
+pub struct Adjustment {
+    pub name: &'static str,
+    pub label: String,
+    pub old: String,
+    pub new: String,
+    pub new_value: Value,
+}
+
+/// Parameters that are never reported as adjusted (display settings, presets, phantom, style)
+const NOT_ADJUSTMENTS: &[&str] = &[
+    "load_presets",
+    "object",
+    "parameter_style",
+    "field_strength",
+    "displayed_slice",
+    "shot",
+    "reference_tissue",
+    "image_mode",
+    "kspace_mode",
+    "kspace_exponent",
+    "show_processed_kspace",
+    "signal_exponent",
+    "show_FOV",
+    "show_TE_span",
+    "show_TR_span",
+    "show_TI_span",
+];
+
+/// Parameters whose changes are never checked for conflicts
+pub const UNCHECKED_CHANGES: &[&str] = &[
+    "load_presets",
+    "object",
+    "parameter_style",
+    "noise_gain",
+    "noise_type",
+    "interference_level",
+    "displayed_slice",
+    "shot",
+    "reference_tissue",
+    "image_mode",
+    "kspace_mode",
+    "kspace_exponent",
+    "show_processed_kspace",
+    "signal_exponent",
+    "show_FOV",
+    "show_TE_span",
+    "show_TR_span",
+    "show_TI_span",
+    "slice_pos_LR",
+    "slice_pos_AP",
+    "slice_pos_HF",
+    "slice_angle_1",
+    "slice_angle_2",
+    "slice_orientation",
+];
+
+/// Result of a quick check of a parameter change, ordered by severity
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RangeState {
+    Free,
+    Adjusts,
+    Impossible,
+}
+
+/// Options of a slider with the information which of them adjust other parameters
+#[derive(Debug, Clone)]
+pub struct SliderRange {
+    pub name: &'static str,
+    /// controller generation the range was computed for
+    pub generation: u64,
+    pub options: Vec<Opt>,
+    /// per option: other parameters would be adjusted
+    pub adjusts: Vec<bool>,
+}
+
+#[derive(Clone)]
 pub struct Controller {
     pub params: Vec<ParamState>,
     pub inputs: Inputs,
@@ -81,6 +159,94 @@ pub struct Controller {
     /// incremented whenever the protocol was recomputed
     pub generation: u64,
     pub messages: Vec<String>,
+    /// only previewing a change: the slice of a 3D phantom is not recomputed
+    preview_only: bool,
+}
+
+/// Value of the graph node of parameter `name` for the given inputs and protocol
+fn graph_value_of(i: &Inputs, p: &Protocol, name: &str) -> Option<Value> {
+    let n = |x: f64| Some(Value::Num(x));
+    let s = |x: &str| Some(Value::Str(x.to_string()));
+    let b = |x: bool| Some(Value::Bool(x));
+    match name {
+        "object" => s(&i.object),
+        "field_strength" => n(i.field_strength),
+        "min_voxel_size" => n(i.min_voxel_size),
+        "noise_gain" => n(i.noise_gain),
+        "noise_type" => s(&i.noise_type),
+        "interference_level" => n(i.interference_level),
+        "sequence_type" => s(&i.sequence_type),
+        "pixel_bandwidth" => n(i.pixel_bandwidth),
+        "FOV_bandwidth" => n(43.2),
+        "NSA" => n(i.nsa),
+        "partial_Fourier_factor" => n(i.partial_fourier_factor),
+        "turbo_factor" => n(p.turbo_factor as f64),
+        "EPI_factor" => n(p.epi_factor as f64),
+        "echo_order" => s(&p.echo_order),
+        "FatSat" => b(i.fatsat),
+        "TR" => n(p.tr),
+        "TE" => n(p.te),
+        "TI" => n(i.ti),
+        "FA" => n(i.fa),
+        "trajectory" => s(&i.trajectory),
+        "frequency_direction" => s(&i.frequency_direction),
+        "FOV_P" => n(i.fov_p),
+        "FOV_F" => n(i.fov_f),
+        "phase_oversampling" => n(i.phase_oversampling),
+        "radial_sampling_factor" => n(i.radial_sampling_factor),
+        "matrix_P" => n(p.matrix_p as f64),
+        "matrix_F" => n(p.matrix_f as f64),
+        "recon_matrix_P" => n(p.recon_matrix_p as f64),
+        "recon_matrix_F" => n(p.recon_matrix_f as f64),
+        "slice_thickness" => n(i.slice_thickness),
+        "radial_FOV_oversampling" => n(i.radial_fov_oversampling),
+        "show_FOV" => b(i.show_fov),
+        "show_TE_span" => b(i.show_te_span),
+        "show_TR_span" => b(i.show_tr_span),
+        "show_TI_span" => b(i.show_ti_span),
+        "reference_tissue" => s(&p.reference_tissue),
+        "image_mode" => s(&i.image_mode),
+        "show_processed_kspace" => b(i.show_processed_kspace),
+        "kspace_exponent" => n(i.kspace_exponent),
+        "kspace_mode" => s(&i.kspace_mode),
+        "homodyne" => b(i.homodyne),
+        "do_apodize" => b(i.do_apodize),
+        "apodization_alpha" => n(i.apodization_alpha),
+        "do_zerofill" => b(i.do_zerofill),
+        "shot" => n(p.shot as f64),
+        "signal_exponent" => n(i.signal_exponent),
+        "slice_orientation" => s(&i.slice_orientation),
+        "slice_angle_1" => n(i.slice_angle_1),
+        "slice_angle_2" => n(i.slice_angle_2),
+        "slice_pos_LR" => n(i.slice_pos[0]),
+        "slice_pos_AP" => n(i.slice_pos[1]),
+        "slice_pos_HF" => n(i.slice_pos[2]),
+        "num_slices" => n(i.num_slices as f64),
+        "slice_gap" => n(i.slice_gap),
+        "displayed_slice" => n(i.displayed_slice.min(i.num_slices.max(1) - 1) as f64),
+        _ => None,
+    }
+}
+
+/// Bounds of parameter `name` for the given inputs and protocol (`bounds` graph nodes)
+fn bounds_of(i: &Inputs, p: &Protocol, name: &str) -> Option<MinMax> {
+    match name {
+        "shot" => Some(p.shot_bounds),
+        "turbo_factor" => Some(p.turbo_factor_bounds),
+        "matrix_F" => Some(p.matrix_f_bounds),
+        "matrix_P" => Some(p.matrix_p_bounds),
+        "recon_matrix_F" => Some(p.recon_matrix_f_bounds),
+        "recon_matrix_P" => Some(p.recon_matrix_p_bounds),
+        "FOV_F" => Some(p.fov_f_bounds),
+        "FOV_P" => Some(p.fov_p_bounds),
+        "TR" => Some(p.tr_bounds),
+        "TI" => p.ti_bounds,
+        "TE" => Some(p.te_bounds),
+        "pixel_bandwidth" => Some(p.pixel_bandwidth_bounds),
+        "slice_thickness" => Some(p.slice_thickness_bounds),
+        "displayed_slice" => Some(MinMax::new(0.0, (i.num_slices.max(1) - 1) as f64)),
+        _ => None,
+    }
 }
 
 fn upper_contains(s: &str, pat: &str) -> bool {
@@ -116,6 +282,7 @@ impl Controller {
             info: Info::default(),
             generation: 0,
             messages: Vec::new(),
+            preview_only: false,
         };
         c.refresh_phantoms();
         c.sync_with_graph();
@@ -165,92 +332,210 @@ impl Controller {
 
     /// Value of a graph node that corresponds to a parameter
     fn graph_value(&self, name: &str) -> Option<Value> {
-        let p = &self.protocol;
-        let i = &self.inputs;
-        let n = |x: f64| Some(Value::Num(x));
-        let s = |x: &str| Some(Value::Str(x.to_string()));
-        let b = |x: bool| Some(Value::Bool(x));
-        match name {
-            "object" => s(&i.object),
-            "field_strength" => n(i.field_strength),
-            "min_voxel_size" => n(i.min_voxel_size),
-            "noise_gain" => n(i.noise_gain),
-            "sequence_type" => s(&i.sequence_type),
-            "pixel_bandwidth" => n(i.pixel_bandwidth),
-            "FOV_bandwidth" => n(43.2),
-            "NSA" => n(i.nsa),
-            "partial_Fourier_factor" => n(i.partial_fourier_factor),
-            "turbo_factor" => n(p.turbo_factor as f64),
-            "EPI_factor" => n(p.epi_factor as f64),
-            "echo_order" => s(&p.echo_order),
-            "FatSat" => b(i.fatsat),
-            "TR" => n(p.tr),
-            "TE" => n(p.te),
-            "TI" => n(i.ti),
-            "FA" => n(i.fa),
-            "trajectory" => s(&i.trajectory),
-            "frequency_direction" => s(&i.frequency_direction),
-            "FOV_P" => n(i.fov_p),
-            "FOV_F" => n(i.fov_f),
-            "phase_oversampling" => n(i.phase_oversampling),
-            "radial_sampling_factor" => n(i.radial_sampling_factor),
-            "matrix_P" => n(p.matrix_p as f64),
-            "matrix_F" => n(p.matrix_f as f64),
-            "recon_matrix_P" => n(p.recon_matrix_p as f64),
-            "recon_matrix_F" => n(p.recon_matrix_f as f64),
-            "slice_thickness" => n(i.slice_thickness),
-            "radial_FOV_oversampling" => n(i.radial_fov_oversampling),
-            "show_FOV" => b(i.show_fov),
-            "show_TE_span" => b(i.show_te_span),
-            "show_TR_span" => b(i.show_tr_span),
-            "show_TI_span" => b(i.show_ti_span),
-            "reference_tissue" => s(&p.reference_tissue),
-            "image_mode" => s(&i.image_mode),
-            "show_processed_kspace" => b(i.show_processed_kspace),
-            "kspace_exponent" => n(i.kspace_exponent),
-            "kspace_mode" => s(&i.kspace_mode),
-            "homodyne" => b(i.homodyne),
-            "do_apodize" => b(i.do_apodize),
-            "apodization_alpha" => n(i.apodization_alpha),
-            "do_zerofill" => b(i.do_zerofill),
-            "shot" => n(p.shot as f64),
-            "signal_exponent" => n(i.signal_exponent),
-            "slice_orientation" => s(&i.slice_orientation),
-            "slice_angle_1" => n(i.slice_angle_1),
-            "slice_angle_2" => n(i.slice_angle_2),
-            "slice_pos_LR" => n(i.slice_pos[0]),
-            "slice_pos_AP" => n(i.slice_pos[1]),
-            "slice_pos_HF" => n(i.slice_pos[2]),
-            "num_slices" => n(i.num_slices as f64),
-            "slice_gap" => n(i.slice_gap),
-            "displayed_slice" => n(i.displayed_slice.min(i.num_slices.max(1) - 1) as f64),
-            _ => None,
-        }
+        graph_value_of(&self.inputs, &self.protocol, name)
     }
 
     fn bounds_node(&self, name: &str) -> Option<MinMax> {
-        let p = &self.protocol;
-        match name {
-            "shot" => Some(p.shot_bounds),
-            "turbo_factor" => Some(p.turbo_factor_bounds),
-            "matrix_F" => Some(p.matrix_f_bounds),
-            "matrix_P" => Some(p.matrix_p_bounds),
-            "recon_matrix_F" => Some(p.recon_matrix_f_bounds),
-            "recon_matrix_P" => Some(p.recon_matrix_p_bounds),
-            "FOV_F" => Some(p.fov_f_bounds),
-            "FOV_P" => Some(p.fov_p_bounds),
-            "TR" => Some(p.tr_bounds),
-            "TI" => p.ti_bounds,
-            "TE" => Some(p.te_bounds),
-            "pixel_bandwidth" => Some(p.pixel_bandwidth_bounds),
-            "slice_thickness" => Some(p.slice_thickness_bounds),
-            "displayed_slice" => Some(MinMax::new(0.0, (self.inputs.num_slices.max(1) - 1) as f64)),
-            _ => None,
-        }
+        bounds_of(&self.inputs, &self.protocol, name)
     }
 
     // ---------------------------------------------------------------------------------------
     // user interaction
+
+    /// The other parameters that setting `name` to `value` would adjust (parameter conflicts),
+    /// without changing anything
+    pub fn preview(&self, name: &str, value: &Value) -> Vec<Adjustment> {
+        if UNCHECKED_CHANGES.contains(&name) || self.value(name) == value {
+            return Vec::new();
+        }
+        let mut c = self.clone();
+        c.preview_only = true;
+        c.on_change(name, value.clone());
+        self.adjustments(&c, name)
+    }
+
+    /// Set `name` to `value` together with the adjustments it causes (see `preview`), which are
+    /// kept as the new values of those parameters (e.g. a TR prolonged for a longer TE stays
+    /// prolonged when TE is shortened again), as on scanners
+    pub fn change_with_adjustments(&mut self, name: &str, value: Value, adjustments: &[Adjustment]) {
+        self.on_change(name, value);
+        for a in adjustments {
+            // only parameters that took the previewed value and are inputs themselves
+            if INPUT_NAMES.contains(&a.name) && self.value(a.name) == &a.new_value {
+                let st = self.state_mut(a.name);
+                st.value = a.new_value.clone();
+                if let Err(e) = self.inputs.set(a.name, &a.new_value) {
+                    self.messages.push(e);
+                }
+            }
+        }
+        self.update_inputs(&[]);
+        self.sync_with_graph();
+    }
+
+    /// Visible parameters that differ between `self` and `other`, apart from `changed` and the
+    /// parameters that follow it by design
+    fn adjustments(&self, other: &Controller, changed: &str) -> Vec<Adjustment> {
+        let companions: &[&str] = match changed {
+            "matrix_F" => &["recon_matrix_F"],
+            "matrix_P" => &["recon_matrix_P"],
+            "voxel_F" => &["recon_voxel_F"],
+            "voxel_P" => &["recon_voxel_P"],
+            _ => &[],
+        };
+        let mut out = Vec::new();
+        for (a, b) in self.params.iter().zip(other.params.iter()) {
+            let n = a.spec.name;
+            if n == changed || !a.visible() || a.spec.group.is_none() || NOT_ADJUSTMENTS.contains(&n) || companions.contains(&n) {
+                continue;
+            }
+            let differs = match (&a.value, &b.value) {
+                (Value::Num(x), Value::Num(y)) => (x - y).abs() > 1e-9 * x.abs().max(y.abs()).max(1.0),
+                (x, y) => x != y,
+            };
+            if differs {
+                out.push(Adjustment {
+                    name: n,
+                    label: a.label.trim_end_matches(" [°]").to_string(),
+                    old: a.value_label(),
+                    new: b.value_label(),
+                    new_value: b.value.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Displayed value of parameter `name` (incl. the conversions of the parameter styles) for
+    /// the given inputs and protocol
+    fn raw_value(&self, i: &Inputs, p: &Protocol, name: &str) -> Option<Value> {
+        match name {
+            "FOV_bandwidth" => Some(Value::Num(convert::pixel_bw_to_fov_bw(i.pixel_bandwidth, p.matrix_f as f64))),
+            "FW_shift" => Some(Value::Num(convert::pixel_bw_to_shift(i.pixel_bandwidth, i.field_strength))),
+            "voxel_F" => Some(Value::Num(i.fov_f / p.matrix_f as f64)),
+            "voxel_P" => Some(Value::Num(i.fov_p / p.matrix_p as f64)),
+            "recon_voxel_F" => Some(Value::Num(i.fov_f / p.recon_matrix_f as f64)),
+            "recon_voxel_P" => Some(Value::Num(i.fov_p / p.recon_matrix_p as f64)),
+            _ => graph_value_of(i, p, name),
+        }
+    }
+
+    /// Whether `v` lies within the bounds of parameter `name` for the given inputs and protocol
+    /// (as `update_bounds` restricts the options)
+    fn within_bounds(&self, i: &Inputs, p: &Protocol, name: &str, v: f64) -> bool {
+        let tol = 1e-9 * v.abs().max(1.0);
+        let inside = |b: MinMax| b.min.is_none_or(|m| v >= m - tol) && b.max.is_none_or(|m| v <= m + tol);
+        let pbw = p.pixel_bandwidth_bounds;
+        let (pmin, pmax) = (pbw.min.unwrap_or(f64::INFINITY), pbw.max.unwrap_or(f64::NEG_INFINITY));
+        match name {
+            "FOV_bandwidth" => {
+                let m = p.matrix_f as f64;
+                inside(MinMax::new(convert::pixel_bw_to_fov_bw(pmin, m), convert::pixel_bw_to_fov_bw(pmax, m)))
+            }
+            "FW_shift" => inside(MinMax::new(convert::pixel_bw_to_shift(pmax, i.field_strength), convert::pixel_bw_to_shift(pmin, i.field_strength))),
+            "voxel_F" | "voxel_P" | "recon_voxel_F" | "recon_voxel_P" => {
+                let dir = &name[name.len() - 1..];
+                let fov = if dir == "F" { i.fov_f } else { i.fov_p };
+                let prefix = if name.starts_with("recon_") { "recon_" } else { "" };
+                let b = bounds_of(i, p, &format!("{prefix}matrix_{dir}")).unwrap_or_default();
+                inside(MinMax { min: b.max.map(|m| fov / m), max: b.min.map(|m| fov / m) })
+            }
+            "EPI_factor" => v <= p.max_epi_factor as f64 + tol && (p.turbo_factor <= 1 || (v.round() as i64) % 2 == 1),
+            _ => bounds_of(i, p, name).is_none_or(inside),
+        }
+    }
+
+    /// Quick evaluation of a change (inputs and protocol only, no parameter state): whether
+    /// `name` takes `value` and whether other visible parameters change
+    fn quick_check(&self, name: &str, value: &Value) -> RangeState {
+        let mut inp = self.inputs.clone();
+        for (k, v) in self.inputs_to_update(name, value.clone()) {
+            if inp.set(&k, &v).is_err() {
+                return RangeState::Impossible;
+            }
+        }
+        let p = protocol::compute(&inp, &self.phantom);
+        let same = |a: &Option<Value>, b: &Option<Value>| match (a, b) {
+            (Some(Value::Num(x)), Some(Value::Num(y))) => (x - y).abs() <= 1e-6 * x.abs().max(y.abs()).max(1.0),
+            (x, y) => x == y,
+        };
+        if !same(&self.raw_value(&inp, &p, name), &Some(value.clone())) || !self.within_bounds(&inp, &p, name, value.num()) {
+            return RangeState::Impossible;
+        }
+        let companions: &[&str] = match name {
+            "matrix_F" => &["recon_matrix_F"],
+            "matrix_P" => &["recon_matrix_P"],
+            "voxel_F" => &["recon_voxel_F"],
+            "voxel_P" => &["recon_voxel_P"],
+            _ => &[],
+        };
+        for st in &self.params {
+            let n = st.spec.name;
+            if n == name || !st.visible() || st.spec.group.is_none() || NOT_ADJUSTMENTS.contains(&n) || companions.contains(&n) {
+                continue;
+            }
+            if !same(&self.raw_value(&self.inputs, &self.protocol, n), &self.raw_value(&inp, &p, n)) {
+                return RangeState::Adjusts;
+            }
+        }
+        RangeState::Free
+    }
+
+    /// Selectable range of the discrete slider `name`, Siemens style: the values that change no
+    /// other parameter (the normal range), extended by the values for which other parameters are
+    /// adjusted (e.g. TR is prolonged for a longer TE or a higher turbo factor). `None` if the
+    /// parameter has no such range.
+    pub fn slider_range(&self, name: &str) -> Option<SliderRange> {
+        let st = self.state(name);
+        // (EPI factor: only odd values in turbo spin echo, not a contiguous range)
+        if st.spec.widget != Widget::DiscreteSlider || UNCHECKED_CHANGES.contains(&name) || name == "EPI_factor" || st.options.is_empty() {
+            return None;
+        }
+        let all = st.spec.options.as_ref()?;
+        let vals: Vec<f64> = all.iter().map(|o| o.value.num()).collect();
+        if vals.windows(2).any(|w| w[1] <= w[0]) {
+            return None;
+        }
+        let pos = |v: f64| vals.iter().position(|&x| x == v);
+        let current = pos(st.value.num()).or_else(|| snap(st.value.num(), &vals, SnapMode::Nearest).and_then(pos))?;
+        let lo_b = pos(st.options[0].value.num())?;
+        let hi_b = pos(st.options[st.options.len() - 1].value.num())?;
+        let check = |k: usize| if k == current { RangeState::Free } else { self.quick_check(name, &all[k].value) };
+        // first index (going away from the current value) whose state is at least `level`,
+        // assuming the state only gets worse with the distance (Free → Adjusts → Impossible)
+        let boundary = |up: bool, level: RangeState| -> usize {
+            let n = if up { vals.len() - 1 - current } else { current };
+            let at = |d: usize| if up { current + d } else { current - d };
+            let (mut a, mut b) = (0usize, n + 1); // invariant: state(a) < level, state(b) >= level (b = n+1: none)
+            while b - a > 1 {
+                let m = (a + b) / 2;
+                if check(at(m)) >= level {
+                    b = m;
+                } else {
+                    a = m;
+                }
+            }
+            b
+        };
+        let (free_up, ok_up) = (boundary(true, RangeState::Adjusts), boundary(true, RangeState::Impossible));
+        let (free_dn, ok_dn) = (boundary(false, RangeState::Adjusts), boundary(false, RangeState::Impossible));
+        // selectable: at least the normal range, plus the extension in which the change succeeds
+        let lo = (current - (ok_dn - 1)).min(lo_b);
+        let hi = (current + (ok_up - 1)).max(hi_b);
+        let options: Vec<Opt> = all[lo..=hi].to_vec();
+        let adjusts: Vec<bool> = (lo..=hi)
+            .map(|k| {
+                if k > current {
+                    k - current >= free_up
+                } else if k < current {
+                    current - k >= free_dn
+                } else {
+                    false
+                }
+            })
+            .collect();
+        Some(SliderRange { name: st.spec.name, generation: self.generation, options, adjusts })
+    }
 
     /// The user changed parameter `name` to `value` (`on_param_change`)
     pub fn on_change(&mut self, name: &str, value: Value) {
@@ -377,7 +662,9 @@ impl Controller {
             }
         }
         self.inputs.displayed_slice = self.inputs.displayed_slice.min(self.inputs.num_slices.max(1) - 1);
-        if let Some(vol) = volume::builtin(&self.inputs.object) {
+        if self.preview_only && self.phantom.is_volume_slice() && self.phantom.name == self.inputs.object {
+            // (previews only need the protocol, which hardly depends on the slice position)
+        } else if let Some(vol) = volume::builtin(&self.inputs.object) {
             // slice through the 3D phantom at the planned position
             let geom = self.inputs.displayed_slice_geometry();
             if self.phantom.slice != Some(geom) || self.phantom.name != self.inputs.object || self.phantom.min_voxel_size != self.inputs.min_voxel_size {
@@ -421,6 +708,21 @@ impl Controller {
         } else {
             self.update_preset_label();
         }
+    }
+
+    /// Reset all parameters (protocol, FOV, slice planning, noise, display) to the standard
+    /// protocol, a T1-weighted spin echo; the phantom is kept
+    pub fn reset_to_standard(&mut self) -> Result<(), String> {
+        let object = self.inputs.object.clone();
+        let mut c = Controller::new()?;
+        c.generation = self.generation + 1;
+        if object != c.inputs.object && c.state("object").options.iter().any(|o| o.value.str() == object) {
+            c.on_change("object", Value::Str(object));
+        }
+        c.on_change("load_presets", Value::s(presets::STANDARD_PRESET));
+        c.set_reference_snr();
+        *self = c;
+        Ok(())
     }
 
     pub fn forget_preset(&mut self) {
@@ -796,5 +1098,45 @@ mod tests {
         assert_eq!(d.num("slice_pos_LR"), 12.5);
         assert_eq!(d.inputs.num_slices, 9);
         assert_eq!(d.num("TR"), c.num("TR"));
+    }
+
+    #[test]
+    fn conflicts_preview_and_keep_adjustments() {
+        let mut c = Controller::new().unwrap();
+        c.reset_to_standard().unwrap();
+        assert_eq!(c.str("load_presets"), "T1w-SE");
+        assert_eq!(c.num("TR"), 500.0);
+        // a TE within the normal range changes nothing else
+        assert!(c.preview("TE", &Value::Num(20.0)).is_empty());
+        // a long TE needs a longer TR
+        let adj = c.preview("TE", &Value::Num(750.0));
+        assert_eq!(adj.len(), 1);
+        assert_eq!(adj[0].name, "TR");
+        let new_tr = adj[0].new_value.num();
+        assert!(new_tr > 750.0);
+        c.change_with_adjustments("TE", Value::Num(750.0), &adj);
+        assert_eq!(c.num("TE"), 750.0);
+        assert_eq!(c.num("TR"), new_tr);
+        // the prolonged TR is kept when TE is shortened again
+        c.on_change("TE", Value::Num(20.0));
+        assert_eq!(c.num("TR"), new_tr);
+        // nothing is changed by previews
+        assert_eq!(c.num("TE"), 20.0);
+    }
+
+    #[test]
+    fn slider_ranges_extend_into_adjusting_values() {
+        let mut c = Controller::new().unwrap();
+        c.reset_to_standard().unwrap();
+        let r = c.slider_range("TE").unwrap();
+        let normal_max = c.state("TE").options.last().unwrap().value.num();
+        assert!(r.options.last().unwrap().value.num() > normal_max, "TE range is extended");
+        assert!(!r.adjusts[0] && *r.adjusts.last().unwrap(), "short TEs are free, the longest adjust TR");
+        // the extension starts beyond the normal range
+        let first_adj = r.adjusts.iter().position(|&a| a).unwrap();
+        assert!(r.options[first_adj].value.num() > normal_max - 1e-9);
+        // no extended range for values that would be impossible: TE below the minimum
+        assert_eq!(r.options[0].value, c.state("TE").options[0].value);
+        assert!(c.slider_range("slice_pos_LR").is_none());
     }
 }

@@ -27,11 +27,6 @@ Determines which acquisition parameters are available, reflecting the styles of 
 Minimum voxel size used internally to represent the simulated object. Smaller values provide greater spatial accuracy but require more memory and computation time when loading a phantom for the first time."#,
     ),
     (
-        "noise_gain",
-        r#"# Noise gain
-Controls the amount of simulated image noise. Increasing the noise gain reduces the signal-to-noise ratio (SNR)."#,
-    ),
-    (
         "sequence_type",
         r#"# Pulse sequence
 Selects the type of MR pulse sequence. The sequence type is reflected in the pulse sequence diagram and determines the MR signal and which acquisition parameters are available."#,
@@ -333,6 +328,25 @@ Gap between neighbouring slices in percent of the slice thickness. A gap reduces
         "displayed_slice",
         r#"# Displayed slice
 Selects which slice of the stack is simulated live and shown as MR image. Press *▶ Scan* to acquire all slices as a series of the examination."#,
+    ),
+    (
+        "noise_type",
+        r#"# Noise type
+*Thermal (Gaussian)*: the thermal noise of the receiver and the patient, white complex Gaussian noise in *k*-space (Rician distributed in magnitude images).
+
+*Spikes*: a few corrupted *k*-space samples (e.g. from electrostatic discharges in the scanner room) cause a striped *herringbone* pattern over the whole image.
+
+*RF interference*: an external radio-frequency source at a fixed frequency (e.g. through an open door of the RF cabin) is picked up during every readout with a random phase, giving a dotted *zipper* line along the phase encoding direction at the position corresponding to its frequency."#,
+    ),
+    (
+        "noise_gain",
+        r#"# Thermal noise level
+Standard deviation of the thermal noise relative to the standard level (100 %). 0 % gives noise-free images. The relative SNR in the status line changes accordingly."#,
+    ),
+    (
+        "interference_level",
+        r#"# Spike / RF interference strength
+Amplitude of the spikes or of the RF interference relative to the standard (100 %). *New realisation* draws new spike positions or a new interference frequency."#,
     ),
 ];
 

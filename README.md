@@ -22,12 +22,29 @@ Get the file for your computer from the **[latest release](../../releases/latest
 ### Using the desktop version
 The window is organised like the console of an MR scanner:
 
-* **Exam bar** (top): phantom ("patient"), field strength, parameter style (how resolution and bandwidth are entered, as on scanners of different vendors), the loaded protocol, help mode and light/dark theme.
-* **Browser** (left, **☰**): the examination (acquired series, see below), protocols (presets; open/save protocol files in TOML, compatible with the Python version for 2D phantoms), phantoms (import, phantom maker, delete own phantoms) and the k-space cache.
+* **Exam bar** (top): phantom ("patient"), field strength, parameter style (how resolution and bandwidth are entered, as on scanners of different vendors), the loaded protocol with **↺ Reset**, help mode and light/dark theme.
+* **Browser** (left, **☰**): the examination (acquired series, see below), protocols (presets; open/save protocol files in TOML, compatible with the Python version for 2D phantoms), phantoms (import, phantom maker, delete own phantoms), the k-space cache, the noise settings and options.
 * **Viewing** (centre): slice planning (3D phantom), MR image, k-space and pulse sequence diagram, each switchable. Hover a gradient, RF pulse or sampling window in the sequence diagram to see its properties and its path in k-space.
 * **Parameter card** (bottom) with the tabs *Routine*, *Contrast*, *Resolution*, *Geometry*, *Sequence* and *Recon*, and the status line with the **▶ Scan** button, acquisition time (TA), number of slices and concatenations, voxel size, relative SNR, bandwidth, fat/water shift and number of shots.
 
 Help mode (**? Help**) provides explanations of each parameter; hovering TE, TR or TI highlights the interval in the pulse sequence diagram.
+
+The program starts with the **standard protocol**, a T1-weighted spin echo (TR 500 ms, minimum TE, 256 × 224 matrix, 4 mm slices). **↺ Reset** returns all parameters to it – protocol, field of view, slice position, noise and display settings; the phantom and the acquired series are kept. It is also listed as preset *T1w SE*.
+
+### Parameter conflicts
+As on MR scanners, a change of one parameter can require changes of others – a longer TE needs a longer TR, a larger matrix or a lower bandwidth a longer TE, a higher turbo factor a longer TR, thin slices a longer TE:
+* **Colour-coded sliders**: below each slider, green marks the values that change no other parameter and orange the values for which other parameters are adjusted. The sliders are extended by these orange values (beyond the range that fits the current protocol); hovering an orange value shows what would change (e.g. *750 ms: TR 500 ms → 760 ms*).
+* **Warning before the change** (option *Warn before other parameters change*, on by default): a dialog lists the parameters that would be adjusted, with their old and new values; *Accept* (Enter) makes the change, *Cancel* (Esc) keeps the protocol. Accepted adjustments stay (a TR prolonged for a long TE is not shortened again automatically). With the option off, the adjustments are made directly.
+
+Both can be switched off under *OPTIONS* in the browser.
+
+![](docs/conflict.png)
+
+### Noise
+The *NOISE* section of the browser sets the kind and strength of the noise:
+* **Type**: *Thermal (Gaussian)* – the white complex Gaussian noise of receiver and patient (Rician in magnitude images); *+ spikes* – a few corrupted k-space samples causing a striped herringbone pattern; *+ RF interference* – an external radio frequency picked up in every readout, causing a dotted zipper line along the phase encoding direction; or both.
+* **Thermal noise level** (0–400 % of the standard; 0 % is noise-free) – the relative SNR changes accordingly – and the **strength** of spikes / RF interference.
+* **New realisation** draws new random noise, spike positions and interference frequency; **Standard** returns to thermal noise at 100 %.
 
 ### 3D brain phantom: slice planning and examinations
 The default phantom, **brain 3D**, is a complete head volume (1 mm voxels, 189 × 220 × 184 mm): gray matter, white matter and CSF of the brain, and fat, muscle and bone/air of the head around it. It is derived from the MNI ICBM 152 2009c template (see [License](#license)); [tools/make_brain3d.py](./tools/make_brain3d.py) rebuilds it from the template files. Every slice is computed from the volume with its real thickness (partial volume of tissues over the slice profile), at any position and angulation.
@@ -81,7 +98,7 @@ spinsight [OPTIONS]
                                   files to DIR (no GUI)
         --benchmark               print computation times and exit
 ```
-Example: `spinsight --set load_presets=T2-FLAIR --set object=abdomen --export flair.png` renders an image without opening a window, and `spinsight --set load_presets=T1w-TSE --set slice_orientation=Coronal --set num_slices=20 --scan exam` acquires 20 coronal T1w slices of the 3D phantom into the folder `exam`.
+Without `--set load_presets=…` or a settings file, the standard protocol (T1w SE) is used. Example: `spinsight --set load_presets=T2-FLAIR --set object=abdomen --export flair.png` renders an image without opening a window, and `spinsight --set load_presets=T1w-TSE --set slice_orientation=Coronal --set num_slices=20 --scan exam` acquires 20 coronal T1w slices of the 3D phantom into the folder `exam`.
 
 ## Performance
 The desktop version is a faithful port of the Python computation graph: the same sequence timing and parameter bounds, the same analytic phantom k-space, and the same reconstruction. The test suite cross-validates it against values computed with the Python version (protocol values agree to 10⁻⁹, Cartesian images to 10⁻¹², radial images to about 10⁻⁵, limited by the NUFFT accuracy). Measured on the same 4-core machine:
@@ -124,8 +141,8 @@ The release workflow ([.github/workflows/release.yml](./.github/workflows/releas
 | `src/exam.rs` | – | multi-slice acquisition of the planned stack into series |
 | `src/phantom_maker.rs` | – | segmentation, drawn shapes, phantom import |
 | `src/nufft.rs`, `src/voronoi.rs` | `recon.py` (finufft / mri-nufft) | non-Cartesian gridding |
-| `src/controller.rs` | `controller.py` | parameter styles, bounds, visibility, presets, settings files |
-| `src/gui/` | `gui.py`, `nodes/*_plot.py` | the egui user interface (`planning.rs`: localizers and slice planning, `exam_ui.rs`: scan and series, `maker.rs`: phantom maker window) |
+| `src/controller.rs` | `controller.py` | parameter styles, bounds, visibility, presets, settings files, parameter conflicts (preview, extended slider ranges), reset |
+| `src/gui/` | `gui.py`, `nodes/*_plot.py` | the egui user interface (`planning.rs`: localizers and slice planning, `exam_ui.rs`: scan and series, `conflicts.rs`: colour-coded slider ranges and conflict dialog, `maker.rs`: phantom maker window) |
 
 ## Phantom construction
 To create a new phantom, add a directory with the phantom name containing files with the same name as the directory. For the Python version, the directory goes under [spinsight/phantoms](./spinsight/phantoms). The desktop version has the built-in phantoms compiled in and reads additional phantoms from a `phantoms` folder next to the executable, from the folder given by the environment variable `SPINSIGHT_PHANTOMS`, or from `phantoms` in the SpinSight data directory (`~/.local/share/spinsight` on Linux, `~/Library/Application Support/se.uu.SpinSight` on macOS, `%APPDATA%\uu\SpinSight\data` on Windows). Two formats are supported:
