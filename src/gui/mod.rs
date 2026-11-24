@@ -153,10 +153,9 @@ pub struct SpinSightApp {
     confirm_conflicts: bool,
     show_ranges: bool,
     pending_conflict: Option<conflicts::PendingConflict>,
-    /// parameter whose changes are ignored (cancelled) or not asked again (accepted) until the
-    /// mouse button is released
-    conflict_hold: Option<&'static str>,
-    conflict_accepted: Option<&'static str>,
+    /// slider value that would adjust other parameters, held (not applied) while the slider is
+    /// dragged; the conflict dialog follows when it is released there
+    slider_hold: Option<(&'static str, Value)>,
     confirm_reset: bool,
     show_field_map: bool,
     field_tex: Option<(TextureHandle, f64, u64)>,
@@ -227,8 +226,7 @@ impl SpinSightApp {
             confirm_conflicts: true,
             show_ranges: true,
             pending_conflict: None,
-            conflict_hold: None,
-            conflict_accepted: None,
+            slider_hold: None,
             confirm_reset: false,
             show_field_map: false,
             field_tex: None,
@@ -275,58 +273,51 @@ impl SpinSightApp {
         }
         let object_before = self.ctrl.inputs.object.clone();
         for (name, value) in changes {
-            if self.conflict_hold == Some(name) {
-                continue;
-            }
             if !UNCHECKED_CHANGES.contains(&name) {
                 let adjustments = self.ctrl.preview(name, &value);
-                if !adjustments.is_empty() && (!self.confirm_conflicts || self.conflict_accepted == Some(name)) {
+                if !adjustments.is_empty() && !self.confirm_conflicts {
                     self.ctrl.change_with_adjustments(name, value, &adjustments);
                     continue;
                 }
                 if !adjustments.is_empty() {
-                    let st = self.ctrl.state(name);
-                    let new =
-                        st.spec.options.iter().flatten().chain(st.options.iter()).find(|o| o.value == value).map(|o| o.label.clone()).unwrap_or_else(|| {
-                            match &value {
-                                Value::Num(v) => format!("{v}"),
-                                Value::Str(t) => t.clone(),
-                                Value::Bool(b) => {
-                                    if *b {
-                                        "on".into()
-                                    } else {
-                                        "off".into()
-                                    }
-                                }
-                            }
-                        });
-                    let old = match &st.value {
-                        Value::Bool(b) => {
-                            if *b {
-                                "on".into()
-                            } else {
-                                "off".into()
-                            }
-                        }
-                        _ => st.value_label(),
-                    };
-                    let new = if matches!(value, Value::Bool(_)) {
-                        if value.bool() {
-                            "on".into()
-                        } else {
-                            "off".into()
-                        }
-                    } else {
-                        new
-                    };
-                    self.pending_conflict =
-                        Some(conflicts::PendingConflict { name, label: st.label.trim_end_matches(" [°]").to_string(), old, value, new, adjustments });
+                    self.pending_conflict = Some(self.conflict_for(name, value, adjustments));
                     break;
                 }
             }
             self.ctrl.on_change(name, value);
         }
         self.after_controller_change(&object_before);
+    }
+
+    /// Description of a change of `name` to `value` that adjusts other parameters
+    fn conflict_for(&self, name: &'static str, value: Value, adjustments: Vec<crate::controller::Adjustment>) -> conflicts::PendingConflict {
+        let st = self.ctrl.state(name);
+        let on_off = |b: bool| if b { "on".to_string() } else { "off".to_string() };
+        let label_of = |v: &Value| match v {
+            Value::Bool(b) => on_off(*b),
+            Value::Num(x) => {
+                st.spec.options.iter().flatten().chain(st.options.iter()).find(|o| &o.value == v).map_or_else(|| format!("{x}"), |o| o.label.clone())
+            }
+            Value::Str(t) => st.options.iter().find(|o| &o.value == v).map_or_else(|| t.clone(), |o| o.label.clone()),
+        };
+        let old = match &st.value {
+            Value::Bool(b) => on_off(*b),
+            _ => st.value_label(),
+        };
+        let new = label_of(&value);
+        conflicts::PendingConflict { name, label: st.label.trim_end_matches(" [°]").to_string(), old, value, new, adjustments }
+    }
+
+    /// A held slider value (see `slider_hold`) once the mouse button is released: ask
+    pub(crate) fn release_slider_hold(&mut self) {
+        if let Some((name, value)) = self.slider_hold.take() {
+            let adjustments = self.ctrl.preview(name, &value);
+            if adjustments.is_empty() {
+                self.apply_changes(vec![(name, value)]);
+            } else if self.pending_conflict.is_none() {
+                self.pending_conflict = Some(self.conflict_for(name, value, adjustments));
+            }
+        }
     }
 
     /// Reset all parameters to the standard protocol (the phantom and the examination are kept)
@@ -382,12 +373,11 @@ impl SpinSightApp {
                 let p = self.pending_conflict.take().unwrap();
                 let before = self.ctrl.inputs.object.clone();
                 self.ctrl.change_with_adjustments(p.name, p.value, &p.adjustments);
-                self.conflict_accepted = Some(p.name);
                 self.after_controller_change(&before);
             }
             Some(conflicts::Decision::Cancel) => {
-                let p = self.pending_conflict.take().unwrap();
-                self.conflict_hold = Some(p.name);
+                // the parameter keeps its value (the slider returns to it)
+                self.pending_conflict = None;
             }
             None => {}
         }
@@ -434,7 +424,29 @@ impl SpinSightApp {
             (!adj.is_empty()).then(|| conflicts::describe(&adj))
         };
         let style = RowStyle { help: self.show_help, with_text: self.sliders_with_text, width: PARAM_WIDTH, show_ranges: self.show_ranges };
-        let (change, hovered) = param_row(ui, st, &style, &mut self.text_buf, range, &tip);
+        // value shown but not applied: held while dragging, or waiting for confirmation
+        let held = self
+            .slider_hold
+            .as_ref()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, v)| v.clone())
+            .or_else(|| self.pending_conflict.as_ref().filter(|p| p.name == name).map(|p| p.value.clone()));
+        let row = param_row(ui, st, &style, &mut self.text_buf, range, held.as_ref(), &tip);
+        let (change, hovered) = (row.change, row.hovered);
+        // sliders move freely; a value that would adjust other parameters is held (the image is
+        // not updated) and only proposed in the conflict dialog when the slider is released there
+        let change = match change {
+            Some(v) if row.dragging && self.confirm_conflicts && !UNCHECKED_CHANGES.contains(&name) => {
+                if self.ctrl.preview(name, &v).is_empty() {
+                    self.slider_hold = None;
+                    Some(v)
+                } else {
+                    self.slider_hold = Some((name, v));
+                    None
+                }
+            }
+            other => other,
+        };
         if hovered {
             match name {
                 "TE" => self.spans.te = true,
@@ -858,11 +870,12 @@ impl SpinSightApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let legend = |ui: &mut Ui, color: Color32, text: &str| {
                             ui.label(RichText::new(text).small().color(Color32::GRAY));
-                            let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 10.0), egui::Sense::hover());
-                            ui.painter().line_segment([r.left_center(), r.right_center()], egui::Stroke::new(3.0, color));
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 8.0), egui::Sense::hover());
+                            ui.painter().rect_filled(r, 4.0, color);
                         };
-                        legend(ui, conflicts::ADJUST_COLOR, "adjusts other parameters");
-                        legend(ui, conflicts::FREE_COLOR, "no other changes");
+                        let (free, adjust) = conflicts::rail_colors(ui.visuals().dark_mode);
+                        legend(ui, adjust, "adjusts other parameters");
+                        legend(ui, free, "no other changes");
                     });
                 }
             });
@@ -1235,20 +1248,31 @@ struct RowStyle {
     show_ranges: bool,
 }
 
-/// One parameter widget: returns (new value if changed, hovered). `range`: the selectable values
-/// of a discrete slider with the information which of them adjust other parameters; `tip`
-/// describes the adjustments of a value.
+/// Result of a parameter widget
+struct RowResult {
+    /// new value if changed
+    change: Option<Value>,
+    hovered: bool,
+    /// a slider is being dragged
+    dragging: bool,
+}
+
+/// One parameter widget. `range`: the selectable values of a discrete slider with the
+/// information which of them adjust other parameters; `held`: a slider value shown but not yet
+/// applied; `tip` describes the adjustments of a value.
 fn param_row(
     ui: &mut Ui,
     st: &ParamState,
     style: &RowStyle,
     text_buf: &mut HashMap<&'static str, String>,
     range: Option<&SliderRange>,
+    held: Option<&Value>,
     tip: &dyn Fn(&Value) -> Option<String>,
-) -> (Option<Value>, bool) {
+) -> RowResult {
     let (help, with_text, width) = (style.help, style.with_text, style.width);
     let name = st.spec.name;
     let mut change = None;
+    let mut dragging = false;
     let mut help_hovered = false;
     let resp = ui.horizontal(|ui| {
         if help {
@@ -1293,12 +1317,21 @@ fn param_row(
                 }
             }
             Widget::DiscreteSlider => {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}:", st.label)).color(Color32::GRAY));
-                    ui.label(RichText::new(st.value_label()).strong());
-                });
                 // the extended range (if known) includes values that adjust other parameters
                 let opts: &[crate::params::Opt] = range.map_or(st.options.as_slice(), |r| r.options.as_slice());
+                let shown = held.unwrap_or(&st.value);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}:", st.label)).color(Color32::GRAY));
+                    match held.and_then(|h| opts.iter().find(|o| &o.value == h)) {
+                        Some(o) => {
+                            ui.label(RichText::new(format!("{} ⚠", o.label)).strong().color(conflicts::ADJUST_COLOR))
+                                .on_hover_text("Adjusts other parameters: release to confirm");
+                        }
+                        None => {
+                            ui.label(RichText::new(st.value_label()).strong());
+                        }
+                    }
+                });
                 let n = opts.len();
                 ui.horizontal(|ui| {
                     let text_w = if with_text { 64.0 } else { 0.0 };
@@ -1307,18 +1340,19 @@ fn param_row(
                         let mut dummy = 0usize;
                         ui.add_enabled(false, egui::Slider::new(&mut dummy, 0..=1).show_value(false));
                     } else {
-                        let current = opts.iter().position(|o| o.value == st.value).or_else(|| {
+                        let current = opts.iter().position(|o| &o.value == shown).or_else(|| {
                             let vals: Vec<f64> = opts.iter().map(|o| o.value.num()).collect();
-                            crate::params::snap(st.value.num(), &vals, crate::params::SnapMode::Nearest).and_then(|s| vals.iter().position(|&x| x == s))
+                            crate::params::snap(shown.num(), &vals, crate::params::SnapMode::Nearest).and_then(|s| vals.iter().position(|&x| x == s))
                         });
                         let mut idx = current.unwrap_or(0);
                         let r = ui.add_enabled(n > 1, egui::Slider::new(&mut idx, 0..=n - 1).show_value(false));
-                        if r.changed() && opts[idx].value != st.value {
+                        dragging = r.dragged();
+                        if r.changed() && &opts[idx].value != shown {
                             change = Some(opts[idx].value.clone());
                         }
                         if let Some(rg) = range {
                             if style.show_ranges {
-                                conflicts::paint_band(ui, r.rect, &rg.adjusts);
+                                conflicts::paint_rail(ui, &r, &rg.adjusts, idx);
                             }
                             if r.hovered() && !r.dragged() {
                                 if let Some(k) = conflicts::hovered_index(ui, r.rect, n) {
@@ -1356,17 +1390,13 @@ fn param_row(
         });
     });
     let hovered = help_hovered || resp.response.contains_pointer();
-    (change, hovered)
+    RowResult { change, hovered, dragging }
 }
 
 impl eframe::App for SpinSightApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_scan();
         self.ranges.poll();
-        if !ui.ctx().input(|i| i.pointer.any_down()) {
-            self.conflict_hold = None;
-            self.conflict_accepted = None;
-        }
         if let Some(r) = self.worker.poll() {
             if r.id >= self.result.as_ref().map_or(0, |x| x.id) {
                 self.result = Some(r);
@@ -1394,6 +1424,11 @@ impl eframe::App for SpinSightApp {
         }
         if !changes.is_empty() {
             self.apply_changes(changes);
+            ctx.request_repaint();
+        }
+        // a slider held in a range that adjusts other parameters was released
+        if self.slider_hold.is_some() && !ctx.input(|i| i.pointer.any_down()) {
+            self.release_slider_hold();
             ctx.request_repaint();
         }
         if self.worker.status.busy.load(Ordering::Relaxed) {

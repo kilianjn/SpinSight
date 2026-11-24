@@ -4,14 +4,12 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
-use egui::{Color32, Pos2, Rect, RichText, Stroke, Ui};
+use egui::{Color32, Pos2, Rect, RichText, Ui};
 
 use crate::controller::{Adjustment, Controller, SliderRange};
 use crate::params::Value;
 
-/// Values that change no other parameter
-pub const FREE_COLOR: Color32 = Color32::from_rgb(70, 170, 90);
-/// Values for which other parameters are adjusted
+/// Accent colour of conflicts (dialog title, pending values)
 pub const ADJUST_COLOR: Color32 = Color32::from_rgb(235, 150, 40);
 
 /// Computes the slider ranges in a background thread (they need many protocol evaluations)
@@ -101,29 +99,51 @@ impl RangeAnalyzer {
     }
 }
 
-/// Paint the colour band of a slider (below its rail): green where no other parameter changes,
-/// orange where other parameters would be adjusted
-pub fn paint_band(ui: &Ui, slider_rect: Rect, adjusts: &[bool]) {
+/// Colours of the slider rail (values that change no other parameter, values that adjust others)
+pub fn rail_colors(dark: bool) -> (Color32, Color32) {
+    if dark {
+        (Color32::from_rgb(52, 122, 72), Color32::from_rgb(190, 122, 38))
+    } else {
+        (Color32::from_rgb(128, 192, 140), Color32::from_rgb(236, 170, 84))
+    }
+}
+
+/// Colour the rail of the discrete slider `r` with `n = adjusts.len()` positions: green where no
+/// other parameter changes, orange where other parameters would be adjusted; the handle (at
+/// position `idx`) is drawn on top again
+pub fn paint_rail(ui: &Ui, r: &egui::Response, adjusts: &[bool], idx: usize) {
     let n = adjusts.len();
     if n < 2 {
         return;
     }
-    // positions of the handle centre (egui: the rect shrunk by the handle radius)
-    let r = slider_rect.height() / 2.5;
-    let (x0, x1) = (slider_rect.left() + r, slider_rect.right() - r);
-    let y = slider_rect.center().y + 6.0;
+    let rect = r.rect;
+    let rail_r = (ui.spacing().slider_rail_height / 2.0).max(1.0);
+    let rail = Rect::from_min_max(Pos2::new(rect.left(), rect.center().y - rail_r), Pos2::new(rect.right(), rect.center().y + rail_r));
+    // positions of the handle centre (as egui: the rect shrunk by the handle radius)
+    let hr = rect.height() / 2.5;
+    let (x0, x1) = (rect.left() + hr, rect.right() - hr);
     let x_of = |i: f32| x0 + (x1 - x0) * i / (n - 1) as f32;
+    let (free, adjust) = rail_colors(ui.visuals().dark_mode);
     let painter = ui.painter();
+    let cr = rail_r.round() as u8;
     let mut start = 0usize;
     for i in 1..=n {
         if i == n || adjusts[i] != adjusts[start] {
-            let a = if start == 0 { x0 } else { x_of(start as f32 - 0.5) };
-            let b = if i == n { x1 } else { x_of(i as f32 - 0.5) };
-            let color = if adjusts[start] { ADJUST_COLOR } else { FREE_COLOR };
-            painter.line_segment([Pos2::new(a, y), Pos2::new(b, y)], Stroke::new(3.0, color));
+            let a = if start == 0 { rail.left() } else { x_of(start as f32 - 0.5) };
+            let b = if i == n { rail.right() } else { x_of(i as f32 - 0.5) };
+            let (left, right) = (if start == 0 { cr } else { 0 }, if i == n { cr } else { 0 });
+            let corners = egui::CornerRadius { nw: left, sw: left, ne: right, se: right };
+            painter.rect_filled(Rect::from_min_max(Pos2::new(a, rail.top()), Pos2::new(b, rail.bottom())), corners, if adjusts[start] { adjust } else { free });
             start = i;
         }
     }
+    let visuals = ui.style().interact(r);
+    painter.add(egui::epaint::CircleShape {
+        center: Pos2::new(x_of(idx.min(n - 1) as f32), rect.center().y),
+        radius: hr + visuals.expansion,
+        fill: visuals.bg_fill,
+        stroke: visuals.fg_stroke,
+    });
 }
 
 /// Option index under the pointer of a hovered slider
